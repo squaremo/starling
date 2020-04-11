@@ -1,3 +1,7 @@
 domain: fluxcd.io
-repo: fluxcd.io/starling
+repo: github.com/fluxcd/starling
+resources:
+- group: sync.fluxcd.io
+  kind: Sync
+  version: v1alpha1
 version: "2"

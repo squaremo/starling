@@ -1,0 +1,7 @@
+apiVersion: sync.fluxcd.io.fluxcd.io/v1alpha1
+kind: Sync
+metadata:
+  name: sync-sample
+spec:
+  # Add fields here
+  foo: bar
