@@ -1,4 +1,4 @@
-module fluxcd.io/starling
+module github.com/fluxcd/starling
 
 go 1.13
 
