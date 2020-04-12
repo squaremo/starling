@@ -1,5 +1,5 @@
 /*
-Copyright Michael Bridgen <mikeb@squaremobius.net> 2020
+Copyright 2020 Michael Bridgen <mikeb@squaremobius.net>
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,25 +17,33 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
+// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!  NOTE: json
+// tags are required.  Any new fields you add must have json tags for
+// the fields to be serialized.
 
 // SyncSpec defines the desired state of Sync
 type SyncSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
-	// Foo is an example field of Sync. Edit Sync_types.go to remove/update
-	Foo string `json:"foo,omitempty"`
+	// Source is a reference to the GitRepository to use for
+	// definitions
+	Source corev1.ObjectReference `json:"source"`
+	// Cluster is a reference to the cluster to apply definitions to
+	Cluster corev1.ObjectReference `json:"cluster"`
 }
 
 // SyncStatus defines the observed state of Sync
 type SyncStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
+
+	// Revision records the SHA1 of the commit that is synced to.
+	Revision string
 }
 
 // +kubebuilder:object:root=true
