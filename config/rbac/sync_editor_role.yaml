@@ -5,7 +5,7 @@ metadata:
   name: sync-editor-role
 rules:
 - apiGroups:
-  - sync.fluxcd.io.fluxcd.io
+  - sync.fluxcd.io
   resources:
   - syncs
   verbs:
@@ -17,7 +17,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - sync.fluxcd.io.fluxcd.io
+  - sync.fluxcd.io
   resources:
   - syncs/status
   verbs:

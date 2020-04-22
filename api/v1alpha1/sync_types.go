@@ -32,9 +32,9 @@ type SyncSpec struct {
 
 	// Source is a reference to the GitRepository to use for
 	// definitions
-	Source corev1.ObjectReference `json:"source"`
+	Source corev1.LocalObjectReference `json:"source"`
 	// Cluster is a reference to the cluster to apply definitions to
-	Cluster corev1.ObjectReference `json:"cluster"`
+	Cluster corev1.LocalObjectReference `json:"cluster"`
 }
 
 // SyncStatus defines the observed state of Sync
@@ -43,7 +43,7 @@ type SyncStatus struct {
 	// Important: Run "make" to regenerate code after modifying this file
 
 	// Revision records the SHA1 of the commit that is synced to.
-	Revision string
+	Revision string `json:"revision"`
 }
 
 // +kubebuilder:object:root=true

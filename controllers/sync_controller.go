@@ -34,8 +34,8 @@ type SyncReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=sync.fluxcd.io.fluxcd.io,resources=syncs,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=sync.fluxcd.io.fluxcd.io,resources=syncs/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=sync.fluxcd.io,resources=syncs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=sync.fluxcd.io,resources=syncs/status,verbs=get;update;patch
 
 func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	_ = context.Background()
