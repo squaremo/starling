@@ -1,5 +1,5 @@
 /*
-Copyright Michael Bridgen <mikeb@squaremobius.net> 2020
+Copyright 2020 Michael Bridgen <mikeb@squaremobius.net>
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,13 +18,16 @@ package controllers
 
 import (
 	"context"
+	"net/http"
 
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	syncfluxcdiov1alpha1 "github.com/fluxcd/starling/api/v1alpha1"
+	sourcev1alpha1 "github.com/fluxcd/source-controller/api/v1alpha1"
+	syncv1alpha1 "github.com/fluxcd/starling/api/v1alpha1"
 )
 
 // SyncReconciler reconciles a Sync object
@@ -38,16 +41,43 @@ type SyncReconciler struct {
 // +kubebuilder:rbac:groups=sync.fluxcd.io,resources=syncs/status,verbs=get;update;patch
 
 func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
-	_ = context.Background()
-	_ = r.Log.WithValues("sync", req.NamespacedName)
+	ctx := context.Background()
+	log := r.Log.WithValues("sync", req.NamespacedName)
 
-	// your logic here
+	var sync syncv1alpha1.Sync
+	if err := r.Get(ctx, req.NamespacedName, &sync); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	var src sourcev1alpha1.GitRepository
+	sourceName := types.NamespacedName{
+		Namespace: sync.GetNamespace(),
+		Name:      sync.Spec.Source.Name,
+	}
+	if err := r.Get(ctx, sourceName, &src); err != nil {
+		log.Error(err, "source not found", "source", sourceName)
+		return ctrl.Result{Requeue: true}, err
+	}
+
+	artifact := src.GetArtifact()
+	if artifact == nil {
+		log.Info("artifact not present in Source")
+		return ctrl.Result{}, nil
+	}
+
+	_, err := http.Get(artifact.URL)
+	if err != nil {
+		log.Error(err, "failed to fetch artifact URL", "url", artifact.URL)
+		return ctrl.Result{Requeue: true}, err
+	}
+
+	log.Info("got artifact", "url", artifact.URL)
 
 	return ctrl.Result{}, nil
 }
 
 func (r *SyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&syncfluxcdiov1alpha1.Sync{}).
+		For(&syncv1alpha1.Sync{}).
 		Complete(r)
 }

@@ -26,7 +26,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	syncfluxcdiov1alpha1 "github.com/fluxcd/starling/api/v1alpha1"
+	sourcev1alpha1 "github.com/fluxcd/source-controller/api/v1alpha1"
+	syncv1alpha1 "github.com/fluxcd/starling/api/v1alpha1"
 	"github.com/fluxcd/starling/controllers"
 	// +kubebuilder:scaffold:imports
 )
@@ -39,7 +40,8 @@ var (
 func init() {
 	_ = clientgoscheme.AddToScheme(scheme)
 
-	_ = syncfluxcdiov1alpha1.AddToScheme(scheme)
+	_ = syncv1alpha1.AddToScheme(scheme)
+	_ = sourcev1alpha1.AddToScheme(scheme)
 	// +kubebuilder:scaffold:scheme
 }
 

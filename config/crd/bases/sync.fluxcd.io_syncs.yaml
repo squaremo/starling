@@ -52,7 +52,6 @@ spec:
                   type: string
               type: object
           required:
-          - cluster
           - source
           type: object
         status:

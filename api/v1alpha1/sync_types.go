@@ -34,7 +34,8 @@ type SyncSpec struct {
 	// definitions
 	Source corev1.LocalObjectReference `json:"source"`
 	// Cluster is a reference to the cluster to apply definitions to
-	Cluster corev1.LocalObjectReference `json:"cluster"`
+	// +optional
+	Cluster *corev1.LocalObjectReference `json:"cluster"`
 }
 
 // SyncStatus defines the observed state of Sync
