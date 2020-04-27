@@ -17,8 +17,14 @@ limitations under the License.
 package controllers
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
+	"io"
+	"io/ioutil"
 	"net/http"
+	"os"
+	"path/filepath"
 
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -65,13 +71,73 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		return ctrl.Result{}, nil
 	}
 
-	_, err := http.Get(artifact.URL)
+	response, err := http.Get(artifact.URL)
 	if err != nil {
 		log.Error(err, "failed to fetch artifact URL", "url", artifact.URL)
 		return ctrl.Result{Requeue: true}, err
 	}
 
+	if response.StatusCode != http.StatusOK {
+		log.Info("response was not HTTP 200", "code", response.StatusCode)
+		return ctrl.Result{Requeue: true}, nil // FIXME this is going to spam isn't it
+	}
+
 	log.Info("got artifact", "url", artifact.URL)
+	defer response.Body.Close()
+
+	tmpdir, err := ioutil.TempDir("", "sync-")
+	if err != nil {
+		log.Error(err, "failed to create temp dir for expanded source")
+		return ctrl.Result{Requeue: true}, err
+	}
+	defer os.RemoveAll(tmpdir)
+
+	unzip, err := gzip.NewReader(response.Body)
+	if err != nil {
+		log.Error(err, "not a gzip")
+		return ctrl.Result{Requeue: true}, err
+	}
+
+	tr := tar.NewReader(unzip)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break // End of archive
+		}
+		if err != nil {
+			log.Error(err, "error while unpacking tarball")
+			return ctrl.Result{Requeue: true}, err
+		}
+
+		// TODO symlinks, probably
+
+		info := hdr.FileInfo()
+		path := filepath.Join(tmpdir, hdr.Name)
+
+		if info.IsDir() {
+			// we don't need to create these since they will correspond to tmpdir
+			if hdr.Name == "/" || hdr.Name == "./" {
+				continue
+			}
+			if err = os.Mkdir(path, info.Mode()); err != nil {
+				log.Error(err, "failed to create directory while unpacking tarball", "path", path, "name", hdr.Name)
+				return ctrl.Result{Requeue: true}, err
+			}
+			continue
+		}
+
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, info.Mode())
+		if err != nil {
+			log.Error(err, "failed to create file while unpacking tarball", "path", path)
+			return ctrl.Result{Requeue: true}, err
+		}
+		if _, err = io.Copy(f, tr); err != nil {
+			log.Error(err, "failed to write file contents while unpacking tarball", "path", path)
+			return ctrl.Result{Requeue: true}, err
+		}
+	}
+
+	log.Info("unpacked tarball", "tmpdir", tmpdir)
 
 	return ctrl.Result{RequeueAfter: sync.Spec.Interval.Duration}, nil
 }
