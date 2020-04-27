@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -35,6 +36,8 @@ import (
 	sourcev1alpha1 "github.com/fluxcd/source-controller/api/v1alpha1"
 	syncv1alpha1 "github.com/fluxcd/starling/api/v1alpha1"
 )
+
+const retryDelay = 20 * time.Second
 
 // SyncReconciler reconciles a Sync object
 type SyncReconciler struct {
@@ -62,7 +65,7 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	}
 	if err := r.Get(ctx, sourceName, &src); err != nil {
 		log.Error(err, "source not found", "source", sourceName)
-		return ctrl.Result{Requeue: true}, err
+		return ctrl.Result{RequeueAfter: retryDelay}, err
 	}
 
 	artifact := src.GetArtifact()
@@ -74,12 +77,12 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	response, err := http.Get(artifact.URL)
 	if err != nil {
 		log.Error(err, "failed to fetch artifact URL", "url", artifact.URL)
-		return ctrl.Result{Requeue: true}, err
+		return ctrl.Result{RequeueAfter: retryDelay}, err
 	}
 
 	if response.StatusCode != http.StatusOK {
 		log.Info("response was not HTTP 200", "code", response.StatusCode)
-		return ctrl.Result{Requeue: true}, nil // FIXME this is going to spam isn't it
+		return ctrl.Result{RequeueAfter: retryDelay}, nil // FIXME this is going to spam isn't it
 	}
 
 	log.Info("got artifact", "url", artifact.URL)
@@ -88,14 +91,14 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	tmpdir, err := ioutil.TempDir("", "sync-")
 	if err != nil {
 		log.Error(err, "failed to create temp dir for expanded source")
-		return ctrl.Result{Requeue: true}, err
+		return ctrl.Result{RequeueAfter: retryDelay}, err
 	}
 	defer os.RemoveAll(tmpdir)
 
 	unzip, err := gzip.NewReader(response.Body)
 	if err != nil {
 		log.Error(err, "not a gzip")
-		return ctrl.Result{Requeue: true}, err
+		return ctrl.Result{RequeueAfter: retryDelay}, err
 	}
 
 	tr := tar.NewReader(unzip)
@@ -106,7 +109,7 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		}
 		if err != nil {
 			log.Error(err, "error while unpacking tarball")
-			return ctrl.Result{Requeue: true}, err
+			return ctrl.Result{RequeueAfter: retryDelay}, err
 		}
 
 		// TODO symlinks, probably
@@ -121,7 +124,7 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 			}
 			if err = os.Mkdir(path, info.Mode()); err != nil {
 				log.Error(err, "failed to create directory while unpacking tarball", "path", path, "name", hdr.Name)
-				return ctrl.Result{Requeue: true}, err
+				return ctrl.Result{RequeueAfter: retryDelay}, err
 			}
 			continue
 		}
@@ -129,11 +132,11 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, info.Mode())
 		if err != nil {
 			log.Error(err, "failed to create file while unpacking tarball", "path", path)
-			return ctrl.Result{Requeue: true}, err
+			return ctrl.Result{RequeueAfter: retryDelay}, err
 		}
 		if _, err = io.Copy(f, tr); err != nil {
 			log.Error(err, "failed to write file contents while unpacking tarball", "path", path)
-			return ctrl.Result{Requeue: true}, err
+			return ctrl.Result{RequeueAfter: retryDelay}, err
 		}
 	}
 
