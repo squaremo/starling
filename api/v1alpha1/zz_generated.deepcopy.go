@@ -88,6 +88,7 @@ func (in *SyncList) DeepCopyObject() runtime.Object {
 func (in *SyncSpec) DeepCopyInto(out *SyncSpec) {
 	*out = *in
 	out.Source = in.Source
+	out.Interval = in.Interval
 	if in.Cluster != nil {
 		in, out := &in.Cluster, &out.Cluster
 		*out = new(v1.LocalObjectReference)

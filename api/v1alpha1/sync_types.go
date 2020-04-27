@@ -33,6 +33,11 @@ type SyncSpec struct {
 	// Source is a reference to the GitRepository to use for
 	// definitions
 	Source corev1.LocalObjectReference `json:"source"`
+	// Interval is the target period for reapplying the config to the
+	// cluster. Syncs may be processed slower than this, depending on
+	// load; or may occur more often if the sync in question is
+	// updated.
+	Interval metav1.Duration `json:"interval"`
 	// Cluster is a reference to the cluster to apply definitions to
 	// +optional
 	Cluster *corev1.LocalObjectReference `json:"cluster"`

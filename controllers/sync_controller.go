@@ -73,7 +73,7 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 
 	log.Info("got artifact", "url", artifact.URL)
 
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: sync.Spec.Interval.Duration}, nil
 }
 
 func (r *SyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
