@@ -17,10 +17,16 @@ COPY controllers/ controllers/
 # Build
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GO111MODULE=on go build -a -o manager main.go
 
+# Get kubectl from here
+FROM lachlanevenson/k8s-kubectl:v1.17.5 as kubectl
+
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
 FROM gcr.io/distroless/static:nonroot
+# FROM alpine:3.9 # helpful if you want shell access (also comment out USER below)
 WORKDIR /
+ENV PATH=/bin:/usr/bin:/usr/local/bin
+COPY --from=kubectl /usr/local/bin/kubectl /usr/local/bin/
 COPY --from=builder /workspace/manager .
 USER nonroot:nonroot
 

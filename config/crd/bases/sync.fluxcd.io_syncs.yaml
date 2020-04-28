@@ -43,6 +43,11 @@ spec:
                     TODO: Add other useful fields. apiVersion, kind, uid?'
                   type: string
               type: object
+            interval:
+              description: Interval is the target period for reapplying the config
+                to the cluster. Syncs may be processed slower than this, depending
+                on load; or may occur more often if the sync in question is updated.
+              type: string
             source:
               description: Source is a reference to the GitRepository to use for definitions
               properties:
@@ -52,7 +57,7 @@ spec:
                   type: string
               type: object
           required:
-          - cluster
+          - interval
           - source
           type: object
         status:

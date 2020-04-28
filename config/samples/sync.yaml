@@ -1,0 +1,8 @@
+apiVersion: sync.fluxcd.io/v1alpha1
+kind: Sync
+metadata:
+  name: sync
+spec:
+  source:
+    name: source
+  interval: 1m
