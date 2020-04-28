@@ -24,17 +24,13 @@ import (
 	"io/ioutil"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/cli-runtime/pkg/genericclioptions"
-	"k8s.io/kubectl/pkg/cmd/apply"
-	"k8s.io/kubectl/pkg/cmd/util"
-	"sigs.k8s.io/cli-utils/cmd/printers"
-	cliutilsapply "sigs.k8s.io/cli-utils/pkg/apply"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -107,6 +103,7 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	}
 
 	tr := tar.NewReader(unzip)
+	numberOfFiles := 0
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -127,7 +124,7 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 			if hdr.Name == "/" || hdr.Name == "./" {
 				continue
 			}
-			if err = os.Mkdir(path, info.Mode()); err != nil {
+			if err = os.Mkdir(path, info.Mode()&os.ModePerm); err != nil {
 				log.Error(err, "failed to create directory while unpacking tarball", "path", path, "name", hdr.Name)
 				return ctrl.Result{RequeueAfter: retryDelay}, err
 			}
@@ -143,44 +140,18 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 			log.Error(err, "failed to write file contents while unpacking tarball", "path", path)
 			return ctrl.Result{RequeueAfter: retryDelay}, err
 		}
+		numberOfFiles++
 	}
 
-	log.Info("unpacked tarball", "tmpdir", tmpdir)
+	log.Info("unpacked tarball", "tmpdir", tmpdir, "file-count", numberOfFiles)
 
-	// set up the apply command; adapted from
-	// https://github.com/GoogleContainerTools/kpt/blob/master/commands/livecmd.go
-	configFlags := genericclioptions.NewConfigFlags(true)
-	factory := util.NewFactory(configFlags)
-	iostreams := genericclioptions.IOStreams{
-		In:     os.Stdin,
-		Out:    os.Stdout,
-		ErrOut: os.Stderr,
+	cmd := exec.CommandContext(ctx, "kubectl", "apply", "-f", tmpdir)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Error(err, "error running kubectl", "output", string(out))
+		return ctrl.Result{RequeueAfter: retryDelay}, err
 	}
-	applier := apply.NewApplier(factory, iostreams)
-	// This isn't running as part of a command-line, but the best
-	// entry point for running an application seems to be here:
-	// https://github.com/kubernetes-sigs/cli-utils/blob/master/pkg/apply/applier.go#L74
-	// so, I'll pretend there's a command. The flags required to be
-	// present (in
-	// https://github.com/kubernetes/kubectl/blob/master/pkg/cmd/apply/apply.go#L211)
-	// are:
-	//  * --server-side=true
-	//  * --force-conflicts=false
-	//  * --dry-run=none
-	//  * --field-manager=sync-controller
-	fakeCmd := cobra.Command{}
-	_ = fakeCmd.Flags().Bool("server-side", true, "use server-side apply")
-	_ = fakeCmd.Flags().Bool("force-conflicts", false, "force changes against conflicts")
-	_ = fakeCmd.Flags().String("dry-run", "none", "perform a dry run rather than applying")
-	_ = fakeCmd.Flags().String("field-manager", "sync-controller", "name used to track field ownership")
-	_ = fakeCmd.Flags().Bool("validate", true, "validate inputs against their schema")
-	applier.Initialize(fakeCmd, []string{tmpdir})
-	evetnsCh := applier.Run(ctx, cliutilsapply.Options{
-		WaitForReconcile: false,
-		EmitStatusEvents: false, // not waiting anyway
-	})
-	printer := printers.GetPrinter("events", iostreams)
-	printer.Print(ch, false)
+	log.Info("kubectl apply output", "output", string(out))
 
 	return ctrl.Result{RequeueAfter: sync.Spec.Interval.Duration}, nil
 }

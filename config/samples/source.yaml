@@ -1,0 +1,8 @@
+apiVersion: source.fluxcd.io/v1alpha1
+kind: GitRepository
+metadata:
+  name: source
+  namespace: default
+spec:
+  interval: 1m
+  url: https://github.com/squaremo/flux-get-started.git
