@@ -2,32 +2,32 @@ apiVersion: v1
 kind: Namespace
 metadata:
   labels:
-    control-plane: controller-manager
+    control-plane: sync-controller
   name: system
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: controller-manager
+  name: sync-controller
   namespace: system
   labels:
-    control-plane: controller-manager
+    control-plane: sync-controller
 spec:
   selector:
     matchLabels:
-      control-plane: controller-manager
+      control-plane: sync-controller
   replicas: 1
   template:
     metadata:
       labels:
-        control-plane: controller-manager
+        control-plane: sync-controller
     spec:
       containers:
       - command:
         - /manager
         args:
         - --enable-leader-election
-        image: controller:latest
+        image: squaremo/sync-controller:latest
         imagePullPolicy: IfNotPresent
         name: manager
         resources:
