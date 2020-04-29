@@ -18,14 +18,18 @@ package controllers
 
 import (
 	"archive/tar"
+	"archive/zip"
+	"bytes"
 	"compress/gzip"
 	"context"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -78,54 +82,20 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	}
 	defer os.RemoveAll(tmpdir)
 
-	unzip, err := gzip.NewReader(response.Body)
+	contentType := response.Header.Get("Content-Type")
+	switch contentType {
+	case "application/zip":
+		err = unzip(response.Body, tmpdir, log)
+	case "application/gzip", "application/x-gzip":
+		err = untargzip(response.Body, tmpdir, log)
+	default:
+		err = fmt.Errorf("unsupported content type %q", contentType)
+		log.Error(err, "response contained unsupported archive format")
+	}
+
 	if err != nil {
-		log.Error(err, "not a gzip")
 		return ctrl.Result{RequeueAfter: retryDelay}, err
 	}
-
-	tr := tar.NewReader(unzip)
-	numberOfFiles := 0
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break // End of archive
-		}
-		if err != nil {
-			log.Error(err, "error while unpacking tarball")
-			return ctrl.Result{RequeueAfter: retryDelay}, err
-		}
-
-		// TODO symlinks, probably
-
-		info := hdr.FileInfo()
-		path := filepath.Join(tmpdir, hdr.Name)
-
-		if info.IsDir() {
-			// we don't need to create these since they will correspond to tmpdir
-			if hdr.Name == "/" || hdr.Name == "./" {
-				continue
-			}
-			if err = os.Mkdir(path, info.Mode()&os.ModePerm); err != nil {
-				log.Error(err, "failed to create directory while unpacking tarball", "path", path, "name", hdr.Name)
-				return ctrl.Result{RequeueAfter: retryDelay}, err
-			}
-			continue
-		}
-
-		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, info.Mode())
-		if err != nil {
-			log.Error(err, "failed to create file while unpacking tarball", "path", path)
-			return ctrl.Result{RequeueAfter: retryDelay}, err
-		}
-		if _, err = io.Copy(f, tr); err != nil {
-			log.Error(err, "failed to write file contents while unpacking tarball", "path", path)
-			return ctrl.Result{RequeueAfter: retryDelay}, err
-		}
-		numberOfFiles++
-	}
-
-	log.Info("unpacked tarball", "tmpdir", tmpdir, "file-count", numberOfFiles)
 
 	applyArgs := []string{"apply"}
 	if len(sync.Spec.Paths) == 0 {
@@ -151,4 +121,113 @@ func (r *SyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&syncv1alpha1.Sync{}).
 		Complete(r)
+}
+
+// ---
+
+func untargzip(body io.Reader, tmpdir string, log logr.Logger) error {
+	unzip, err := gzip.NewReader(body)
+	if err != nil {
+		log.Error(err, "not a gzip")
+		return err
+	}
+
+	tr := tar.NewReader(unzip)
+	numberOfFiles := 0
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break // End of archive
+		}
+		if err != nil {
+			log.Error(err, "error while unpacking tarball")
+			return err
+		}
+
+		// TODO symlinks, probably
+
+		info := hdr.FileInfo()
+		path := filepath.Join(tmpdir, hdr.Name)
+
+		if info.IsDir() {
+			// we don't need to create these since they will correspond to tmpdir
+			if hdr.Name == "/" || hdr.Name == "./" {
+				continue
+			}
+			if err = os.Mkdir(path, info.Mode()&os.ModePerm); err != nil {
+				log.Error(err, "failed to create directory while unpacking tarball", "path", path, "name", hdr.Name)
+				return err
+			}
+			continue
+		}
+
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, info.Mode())
+		if err != nil {
+			log.Error(err, "failed to create file while unpacking tarball", "path", path)
+			return err
+		}
+		if _, err = io.Copy(f, tr); err != nil {
+			log.Error(err, "failed to write file contents while unpacking tarball", "path", path)
+			return err
+		}
+		_ = f.Close()
+		numberOfFiles++
+	}
+
+	log.Info("unpacked tarball", "tmpdir", tmpdir, "file-count", numberOfFiles)
+	return nil
+}
+
+func unzip(body io.Reader, tmpdir string, log logr.Logger) error {
+	// The zip reader needs random access (that is
+	// io.ReaderAt). Rather than try to do some tricky on-demand
+	// buffering, I'm going to just read the whole lot into a
+	// bytes.Buffer.
+	buf := new(bytes.Buffer)
+	size, err := io.Copy(buf, body)
+	if err != nil {
+		log.Error(err, "could not read from response body")
+		return err
+	}
+
+	zipReader, err := zip.NewReader(bytes.NewReader(buf.Bytes()), size)
+	if err != nil {
+		log.Error(err, "could not read response as ZIP file")
+		return err
+	}
+	numberOfFiles := 0
+	for _, file := range zipReader.File {
+		name := file.FileHeader.Name
+		// FIXME check for valid paths
+		path := filepath.Join(tmpdir, name)
+
+		if strings.HasSuffix(name, "/") {
+			if err := os.Mkdir(path, os.FileMode(0700)); err != nil {
+				log.Error(err, "failed to create directory from zip", "path", path)
+				return err
+			}
+			continue
+		}
+
+		content, err := file.Open()
+		if err != nil {
+			log.Error(err, "failed to open file in zip", "path", path)
+			return err
+		}
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, os.FileMode(0600))
+		if err != nil {
+			log.Error(err, "failed to create file while unpacking zip", "path", path)
+			return err
+		}
+		if _, err = io.Copy(f, content); err != nil {
+			log.Error(err, "failed to write file contents while unpacking zip", "path", path)
+			return err
+		}
+		_ = f.Close()
+		content.Close()
+		numberOfFiles++
+	}
+
+	log.Info("unpacked zip", "tmpdir", tmpdir, "file-count", numberOfFiles)
+	return nil
 }
