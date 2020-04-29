@@ -5,4 +5,4 @@ metadata:
   namespace: default
 spec:
   interval: 1m
-  url: https://github.com/squaremo/flux-get-started.git
+  url: https://github.com/squaremo/flux-example.git

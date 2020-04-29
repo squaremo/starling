@@ -48,17 +48,20 @@ spec:
                 to the cluster. Syncs may be processed slower than this, depending
                 on load; or may occur more often if the sync in question is updated.
               type: string
-            source:
-              description: Source is a reference to the GitRepository to use for definitions
-              properties:
-                name:
-                  description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                    TODO: Add other useful fields. apiVersion, kind, uid?'
-                  type: string
-              type: object
+            paths:
+              description: Paths gives the paths to include in the sync. If using
+                a kustomization, there should be only one, ending in 'kustomization.yaml'.
+                If missing, the root directory will be used.
+              items:
+                type: string
+              type: array
+            url:
+              description: URL is a url for downloading a zipfile or tarball of the
+                package to sync
+              type: string
           required:
           - interval
-          - source
+          - url
           type: object
         status:
           description: SyncStatus defines the observed state of Sync
