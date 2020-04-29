@@ -3,6 +3,7 @@ kind: Sync
 metadata:
   name: sync
 spec:
-  source:
-    name: source
+  url: "http://source-controller.system/gitrepository/default/source/latest.tar.gz"
+  paths:
+  - config/ollehworld
   interval: 1m

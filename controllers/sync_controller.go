@@ -30,11 +30,9 @@ import (
 
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	sourcev1alpha1 "github.com/fluxcd/source-controller/api/v1alpha1"
 	syncv1alpha1 "github.com/fluxcd/starling/api/v1alpha1"
 )
 
@@ -59,25 +57,9 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	var src sourcev1alpha1.GitRepository
-	sourceName := types.NamespacedName{
-		Namespace: sync.GetNamespace(),
-		Name:      sync.Spec.Source.Name,
-	}
-	if err := r.Get(ctx, sourceName, &src); err != nil {
-		log.Error(err, "source not found", "source", sourceName)
-		return ctrl.Result{RequeueAfter: retryDelay}, err
-	}
-
-	artifact := src.GetArtifact()
-	if artifact == nil {
-		log.Info("artifact not present in Source")
-		return ctrl.Result{}, nil
-	}
-
-	response, err := http.Get(artifact.URL)
+	response, err := http.Get(sync.Spec.URL)
 	if err != nil {
-		log.Error(err, "failed to fetch artifact URL", "url", artifact.URL)
+		log.Error(err, "failed to fetch package URL", "url", sync.Spec.URL)
 		return ctrl.Result{RequeueAfter: retryDelay}, err
 	}
 
@@ -86,7 +68,7 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		return ctrl.Result{RequeueAfter: retryDelay}, nil // FIXME this is going to spam isn't it
 	}
 
-	log.Info("got artifact", "url", artifact.URL)
+	log.Info("got package file", "url", sync.Spec.URL)
 	defer response.Body.Close()
 
 	tmpdir, err := ioutil.TempDir("", "sync-")
@@ -145,7 +127,16 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 
 	log.Info("unpacked tarball", "tmpdir", tmpdir, "file-count", numberOfFiles)
 
-	cmd := exec.CommandContext(ctx, "kubectl", "apply", "-f", tmpdir)
+	applyArgs := []string{"apply"}
+	if len(sync.Spec.Paths) == 0 {
+		applyArgs = append(applyArgs, "-f", tmpdir)
+	}
+	for _, path := range sync.Spec.Paths {
+		// FIXME guard against parent paths
+		applyArgs = append(applyArgs, "-f", filepath.Join(tmpdir, path))
+	}
+
+	cmd := exec.CommandContext(ctx, "kubectl", applyArgs...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		log.Error(err, "error running kubectl", "output", string(out))

@@ -30,9 +30,15 @@ type SyncSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
-	// Source is a reference to the GitRepository to use for
-	// definitions
-	Source corev1.LocalObjectReference `json:"source"`
+	// URL is a url for downloading a zipfile or tarball of the package to sync
+	URL string `json:"url"`
+	// Paths gives the paths to include in the sync. If using a
+	// kustomization, there should be only one, ending in
+	// 'kustomization.yaml'. If missing, the root directory will be
+	// used.
+	// +optional
+	Paths []string `json:"paths"`
+
 	// Interval is the target period for reapplying the config to the
 	// cluster. Syncs may be processed slower than this, depending on
 	// load; or may occur more often if the sync in question is
