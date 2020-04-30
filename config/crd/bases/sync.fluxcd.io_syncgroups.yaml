@@ -35,6 +35,9 @@ spec:
           description: SyncGroupSpec defines a group of clusters to be synced with
             the sync specification provided
           properties:
+            interval:
+              description: Interval is the perion on which syncs should be run.
+              type: string
             source:
               description: Source gives the source of the package to sync.
               properties:
@@ -59,6 +62,7 @@ spec:
                   type: string
               type: object
           required:
+          - interval
           - source
           type: object
         status:

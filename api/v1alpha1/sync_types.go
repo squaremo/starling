@@ -44,7 +44,7 @@ type SyncSpec struct {
 	Interval metav1.Duration `json:"interval"`
 	// Cluster is a reference to the cluster to apply definitions to
 	// +optional
-	Cluster *corev1.LocalObjectReference `json:"cluster"`
+	Cluster *corev1.LocalObjectReference `json:"cluster,omitempty"`
 }
 
 // SyncStatus defines the observed state of Sync

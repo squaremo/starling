@@ -1,4 +1,4 @@
-apiVersion: sync.fluxcd.io.fluxcd.io/v1alpha1
+apiVersion: sync.fluxcd.io/v1alpha1
 kind: SyncGroup
 metadata:
   name: syncgroup-sample

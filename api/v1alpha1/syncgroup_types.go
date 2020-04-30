@@ -30,6 +30,9 @@ type SyncGroupSpec struct {
 	// Source gives the source of the package to sync.
 	// +required
 	Source Source `json:"source"`
+	// Interval is the perion on which syncs should be run.
+	// +required
+	Interval metav1.Duration `json:"interval"`
 }
 
 // Source contains the concrete source specification
