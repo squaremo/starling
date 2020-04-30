@@ -1,0 +1,20 @@
+# permissions for end users to view syncgroups.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: syncgroup-viewer-role
+rules:
+- apiGroups:
+  - sync.fluxcd.io.fluxcd.io
+  resources:
+  - syncgroups
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - sync.fluxcd.io.fluxcd.io
+  resources:
+  - syncgroups/status
+  verbs:
+  - get

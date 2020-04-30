@@ -1,0 +1,78 @@
+
+---
+apiVersion: apiextensions.k8s.io/v1beta1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.2.5
+  creationTimestamp: null
+  name: syncgroups.sync.fluxcd.io
+spec:
+  group: sync.fluxcd.io
+  names:
+    kind: SyncGroup
+    listKind: SyncGroupList
+    plural: syncgroups
+    singular: syncgroup
+  scope: Namespaced
+  validation:
+    openAPIV3Schema:
+      description: SyncGroup is the Schema for the syncgroups API
+      properties:
+        apiVersion:
+          description: 'APIVersion defines the versioned schema of this representation
+            of an object. Servers should convert recognized schemas to the latest
+            internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+          type: string
+        kind:
+          description: 'Kind is a string value representing the REST resource this
+            object represents. Servers may infer this from the endpoint the client
+            submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+          type: string
+        metadata:
+          type: object
+        spec:
+          description: SyncGroupSpec defines a group of clusters to be synced with
+            the sync specification provided
+          properties:
+            source:
+              description: Source gives the source of the package to sync.
+              properties:
+                gitRepository:
+                  description: GitRepository follows a git repository source by taking
+                    the URL
+                  properties:
+                    name:
+                      description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        TODO: Add other useful fields. apiVersion, kind, uid?'
+                      type: string
+                  type: object
+                paths:
+                  description: Paths gives the paths within the package to sync. An
+                    empty value means sync the root directory.
+                  items:
+                    type: string
+                  type: array
+                url:
+                  description: URL syncs clusters to the gzipped tarball or zip archive
+                    at the given URL
+                  type: string
+              type: object
+          required:
+          - source
+          type: object
+        status:
+          description: SyncGroupStatus defines the observed state of SyncGroup
+          type: object
+      type: object
+  version: v1alpha1
+  versions:
+  - name: v1alpha1
+    served: true
+    storage: true
+status:
+  acceptedNames:
+    kind: ""
+    plural: ""
+  conditions: []
+  storedVersions: []
