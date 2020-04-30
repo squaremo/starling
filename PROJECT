@@ -4,4 +4,7 @@ resources:
 - group: sync.fluxcd.io
   kind: Sync
   version: v1alpha1
+- group: sync.fluxcd.io
+  kind: SyncGroup
+  version: v1alpha1
 version: "2"

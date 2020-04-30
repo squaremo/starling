@@ -9,6 +9,26 @@ rules:
 - apiGroups:
   - sync.fluxcd.io
   resources:
+  - syncgroups
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - sync.fluxcd.io
+  resources:
+  - syncgroups/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - sync.fluxcd.io
+  resources:
   - syncs
   verbs:
   - create

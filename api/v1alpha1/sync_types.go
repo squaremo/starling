@@ -27,9 +27,6 @@ import (
 
 // SyncSpec defines the desired state of Sync
 type SyncSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-
 	// URL is a url for downloading a zipfile or tarball of the package to sync
 	URL string `json:"url"`
 	// Paths gives the paths to include in the sync. If using a
@@ -43,10 +40,11 @@ type SyncSpec struct {
 	// cluster. Syncs may be processed slower than this, depending on
 	// load; or may occur more often if the sync in question is
 	// updated.
+	// +required
 	Interval metav1.Duration `json:"interval"`
 	// Cluster is a reference to the cluster to apply definitions to
 	// +optional
-	Cluster *corev1.LocalObjectReference `json:"cluster"`
+	Cluster *corev1.LocalObjectReference `json:"cluster,omitempty"`
 }
 
 // SyncStatus defines the observed state of Sync
