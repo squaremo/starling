@@ -27,6 +27,11 @@ import (
 // SyncGroupSpec defines a group of clusters to be synced with the
 // sync specification provided
 type SyncGroupSpec struct {
+	// Selector gives the set of clusters to which to sync the given
+	// source, as a label selector. If missing, a Sync will be created
+	// for the local cluster. If _empty_, all clusters are selected.
+	// +optional
+	Selector *metav1.LabelSelector `json:"selector,omitempty"`
 	// Source gives the source of the package to sync.
 	// +required
 	Source Source `json:"source"`

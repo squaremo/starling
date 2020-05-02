@@ -34,6 +34,9 @@ import (
 
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	clusterv1alpha3 "sigs.k8s.io/cluster-api/api/v1alpha3"
+	kcfg "sigs.k8s.io/cluster-api/util/kubeconfig"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -61,6 +64,19 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	// If the sync refers to a cluster, get a kubeconfig from it
+	if sync.Spec.Cluster != nil {
+		var cluster clusterv1alpha3.Cluster
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      sync.Spec.Cluster.Name,
+			Namespace: sync.Namespace,
+		}, &cluster); err != nil {
+			// If this Sync refers to a missing cluster, it'll get
+			// deleted at some point anyway
+			return ctrl.Result{RequeueAfter: retryDelay}, client.IgnoreNotFound(err)
+		}
+	}
+
 	response, err := http.Get(sync.Spec.URL)
 	if err != nil {
 		log.Error(err, "failed to fetch package URL", "url", sync.Spec.URL)
@@ -82,12 +98,14 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	}
 	defer os.RemoveAll(tmpdir)
 
+	sourcedir := filepath.Join(tmpdir, "source")
+
 	contentType := response.Header.Get("Content-Type")
 	switch contentType {
 	case "application/zip":
-		err = unzip(response.Body, tmpdir, log)
+		err = unzip(response.Body, sourcedir, log)
 	case "application/gzip", "application/x-gzip":
-		err = untargzip(response.Body, tmpdir, log)
+		err = untargzip(response.Body, sourcedir, log)
 	default:
 		err = fmt.Errorf("unsupported content type %q", contentType)
 		log.Error(err, "response contained unsupported archive format")
@@ -98,21 +116,37 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	}
 
 	applyArgs := []string{"apply"}
+
+	if sync.Spec.Cluster != nil {
+		clusterName := types.NamespacedName{
+			Name:      sync.Spec.Cluster.Name,
+			Namespace: sync.GetNamespace(),
+		}
+		kubeconfig, err := kcfg.FromSecret(ctx, r.Client, clusterName)
+		if err != nil {
+			log.Error(err, "failed to get kubeconfig secret for cluster", "cluster", clusterName)
+			return ctrl.Result{}, err
+		}
+		kubeconfigPath := filepath.Join(tmpdir, "kubeconfig")
+		ioutil.WriteFile(kubeconfigPath, kubeconfig, os.FileMode(0400))
+		applyArgs = append(applyArgs, "--kubeconfig", kubeconfigPath)
+	}
+
 	if len(sync.Spec.Paths) == 0 {
-		applyArgs = append(applyArgs, "-f", tmpdir)
+		applyArgs = append(applyArgs, "-f", sourcedir)
 	}
 	for _, path := range sync.Spec.Paths {
 		// FIXME guard against parent paths
-		applyArgs = append(applyArgs, "-f", filepath.Join(tmpdir, path))
+		applyArgs = append(applyArgs, "-f", filepath.Join(sourcedir, path))
 	}
 
 	cmd := exec.CommandContext(ctx, "kubectl", applyArgs...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		log.Error(err, "error running kubectl", "output", string(out))
-		return ctrl.Result{RequeueAfter: retryDelay}, err
+	} else {
+		log.Info("kubectl apply output", "output", string(out))
 	}
-	log.Info("kubectl apply output", "output", string(out))
 
 	return ctrl.Result{RequeueAfter: sync.Spec.Interval.Duration}, nil
 }
@@ -154,7 +188,7 @@ func untargzip(body io.Reader, tmpdir string, log logr.Logger) error {
 			if hdr.Name == "/" || hdr.Name == "./" {
 				continue
 			}
-			if err = os.Mkdir(path, info.Mode()&os.ModePerm); err != nil {
+			if err = os.MkdirAll(path, info.Mode()&os.ModePerm); err != nil {
 				log.Error(err, "failed to create directory while unpacking tarball", "path", path, "name", hdr.Name)
 				return err
 			}
@@ -202,7 +236,7 @@ func unzip(body io.Reader, tmpdir string, log logr.Logger) error {
 		path := filepath.Join(tmpdir, name)
 
 		if strings.HasSuffix(name, "/") {
-			if err := os.Mkdir(path, os.FileMode(0700)); err != nil {
+			if err := os.MkdirAll(path, os.FileMode(0700)); err != nil {
 				log.Error(err, "failed to create directory from zip", "path", path)
 				return err
 			}
