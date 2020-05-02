@@ -21,9 +21,11 @@ import (
 	"fmt"
 
 	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	clusterv1alpha3 "sigs.k8s.io/cluster-api/api/v1alpha3"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -49,6 +51,16 @@ func (r *SyncGroupReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	ctx := context.Background()
 	log := r.Log.WithValues("syncgroup", req.NamespacedName)
 
+	var syncgroup syncv1alpha1.SyncGroup
+	if err := r.Get(ctx, req.NamespacedName, &syncgroup); err != nil {
+		if client.IgnoreNotFound(err) != nil {
+			log.Error(err, "failed to get syncgroup")
+			return ctrl.Result{RequeueAfter: retryDelay}, err
+		}
+		// Not found; must have been deleted
+		return ctrl.Result{}, nil
+	}
+
 	var syncs syncv1alpha1.SyncList
 	if err := r.List(ctx, &syncs, client.InNamespace(req.Namespace), client.MatchingFields{syncOwnerKey: req.Name}); err != nil {
 		log.Error(err, "listing syncs owned by this syncgroup")
@@ -59,27 +71,86 @@ func (r *SyncGroupReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	// go compare it with the syncs I _should_ have, and delete or
 	// create as appropriate.
 
-	// At present, using a selector to target clusters is not
-	// implemented. So there's just the one possible target -- the
-	// local cluster -- so there should be exactly one Sync owned by
-	// each syncgroup.
-	switch len(syncs.Items) {
-	case 0:
-		if err := r.createSync(ctx, req.NamespacedName); err != nil {
-			log.Error(err, "failed to create sync for syncgroup")
-			return ctrl.Result{RequeueAfter: retryDelay}, err
-		}
-	case 1:
-		// perfect
-	default:
-		// More than one -- how did that happen? Well anyway, delete
-		// all but one
-		for _, sync := range syncs.Items[1:] {
-			if err := r.Delete(ctx, &sync, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil {
-				log.Error(err, "failed to delete extraneous Sync", "sync", sync.Name)
+	// When the selector is missing entirely, there's just the one
+	// possible target -- the local cluster -- so there should be
+	// exactly one Sync owned by the SyncGroup.
+	if syncgroup.Spec.Selector == nil {
+		switch len(syncs.Items) {
+		case 0:
+			newSync, err := r.createSync(ctx, req.NamespacedName, nil)
+			if err != nil {
+				log.Error(err, "failed to create sync for syncgroup")
 				return ctrl.Result{RequeueAfter: retryDelay}, err
 			}
+			log.Info("created Sync", "name", newSync.Name)
+		case 1:
+			// perfect
+		default:
+			// More than one -- how did that happen? Well anyway, delete
+			// all but one
+			for _, sync := range syncs.Items[1:] {
+				if err := r.Delete(ctx, &sync, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil {
+					log.Error(err, "failed to delete extraneous Sync", "sync", sync.Name)
+					return ctrl.Result{RequeueAfter: retryDelay}, err
+				}
+				log.Info("deleted Sync", "name", sync.Name)
+			}
 		}
+		return ctrl.Result{}, nil
+	}
+
+	// If the selector is not empty, I need to compare against the
+	// clusters that match the selector.
+	var clusters clusterv1alpha3.ClusterList
+
+	selector, err := metav1.LabelSelectorAsSelector(syncgroup.Spec.Selector)
+	if err != nil {
+		log.Error(err, fmt.Sprintf("could not make selector from %v", syncgroup.Spec.Selector))
+		return ctrl.Result{}, err
+	}
+
+	if err := r.List(ctx, &clusters, &client.ListOptions{
+		LabelSelector: selector,
+	}); err != nil {
+		log.Error(err, "failed to list selected clusters")
+		return ctrl.Result{RequeueAfter: retryDelay}, err
+	}
+
+	clustersToSync := map[string]struct{}{}
+	var extraSyncs []*syncv1alpha1.Sync
+
+	for _, c := range clusters.Items {
+		clustersToSync[c.Name] = struct{}{}
+	}
+	for _, s := range syncs.Items {
+		if s.Spec.Cluster == nil {
+			extraSyncs = append(extraSyncs, &s)
+			continue
+		}
+		if _, ok := clustersToSync[s.Spec.Cluster.Name]; ok {
+			delete(clustersToSync, s.Spec.Cluster.Name)
+		} else {
+			extraSyncs = append(extraSyncs, &s)
+		}
+	}
+
+	for _, s := range extraSyncs {
+		if err := r.Delete(ctx, s, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil {
+			log.Error(err, "failed to delete Sync")
+			return ctrl.Result{RequeueAfter: retryDelay}, err
+		}
+		log.Info("deleted Sync", "name", s.Name)
+	}
+
+	for name := range clustersToSync {
+		newSync, err := r.createSync(ctx, req.NamespacedName, &corev1.LocalObjectReference{
+			Name: name,
+		})
+		if err != nil {
+			log.Error(err, "failed to create Sync")
+			return ctrl.Result{RequeueAfter: retryDelay}, err
+		}
+		log.Info("created Sync", "name", newSync.Name)
 	}
 
 	return ctrl.Result{}, nil
@@ -106,18 +177,26 @@ func (r *SyncGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func (r *SyncGroupReconciler) createSync(ctx context.Context, nsname types.NamespacedName) error {
+func (r *SyncGroupReconciler) createSync(ctx context.Context, nsname types.NamespacedName, clusterRef *corev1.LocalObjectReference) (*syncv1alpha1.Sync, error) {
 	var sync syncv1alpha1.Sync
 	sync.Namespace = nsname.Namespace
-	sync.Name = nsname.Name + "-local" // TODO just while we have only local cluster
+	if clusterRef != nil {
+		sync.Name = nsname.Name + "-cluster-" + clusterRef.Name
+		sync.Spec.Cluster = clusterRef
+	} else {
+		sync.Name = nsname.Name + "-local"
+	}
 
 	var syncgroup syncv1alpha1.SyncGroup
 	if err := r.Get(ctx, nsname, &syncgroup); err != nil {
-		return err
+		return nil, err
 	}
 
+	// TODO should this really be the controller reference? That is
+	// supposedly for pointing at the controller. Other things seem to
+	// work this way.
 	if err := ctrl.SetControllerReference(&syncgroup, &sync, r.Scheme); err != nil {
-		return err
+		return nil, err
 	}
 
 	if url := syncgroup.Spec.Source.URL; url != nil {
@@ -128,12 +207,12 @@ func (r *SyncGroupReconciler) createSync(ctx context.Context, nsname types.Names
 			Namespace: nsname.Namespace,
 			Name:      ref.Name,
 		}, &gitrepo); err != nil {
-			return err
+			return nil, err
 		}
 		// Start wherever the git repo is up to
 		artifact := gitrepo.GetArtifact()
 		if artifact == nil {
-			return fmt.Errorf("artifact for referenced git repository %q is not ready", gitrepo.Name)
+			return nil, fmt.Errorf("artifact for referenced git repository %q is not ready", gitrepo.Name)
 		}
 		sync.Spec.URL = artifact.URL
 	}
@@ -141,5 +220,5 @@ func (r *SyncGroupReconciler) createSync(ctx context.Context, nsname types.Names
 	sync.Spec.Paths = syncgroup.Spec.Source.Paths
 	sync.Spec.Interval = syncgroup.Spec.Interval
 
-	return r.Create(ctx, &sync)
+	return &sync, r.Create(ctx, &sync)
 }
