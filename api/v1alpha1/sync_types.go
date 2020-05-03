@@ -25,10 +25,23 @@ import (
 // tags are required.  Any new fields you add must have json tags for
 // the fields to be serialized.
 
+type SyncSource struct {
+	// URL is a url for downloading a zipfile or tarball of the
+	// package to sync
+	URL string `json:"url"`
+	// Revision identifies the commit from which the URL is
+	// generated. This accompanies the URL so that it can be
+	// explicitly recorded in the status.
+	// +optional
+	Revision string `json:"revision"`
+}
+
 // SyncSpec defines the desired state of Sync
 type SyncSpec struct {
-	// URL is a url for downloading a zipfile or tarball of the package to sync
-	URL string `json:"url"`
+	// Source is the location from which to get configuration to sync.
+	// +required
+	Source SyncSource `json:"source"`
+
 	// Paths gives the paths to include in the sync. If using a
 	// kustomization, there should be only one, ending in
 	// 'kustomization.yaml'. If missing, the root directory will be
@@ -47,16 +60,29 @@ type SyncSpec struct {
 	Cluster *corev1.LocalObjectReference `json:"cluster,omitempty"`
 }
 
+// ApplyResult is a type for recording the outcome of an attempted
+// sync.
+type ApplyResult string
+
+// Until I parse the output of kubectl apply, it's success or failure
+const (
+	ApplySuccess ApplyResult = "success"
+	ApplyFail    ApplyResult = "fail"
+)
+
 // SyncStatus defines the observed state of Sync
 type SyncStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-
-	// Revision records the SHA1 of the commit that is synced to.
-	Revision string `json:"revision"`
+	// LastApplySource records the source that was set last time a
+	// sync was attempted.
+	LastApplySource *SyncSource `json:"lastApplySource,omitempty"`
+	// LastAppliedTime records the last time a sync was attempted
+	LastApplyTime metav1.Time `json:"lastApplyTime,omitempty"`
+	// LastApplyResult records the outcome of the last sync attempt
+	LastApplyResult ApplyResult `json:"lastApplyResult,omitempty"`
 }
 
 // +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
 
 // Sync is the Schema for the syncs API
 type Sync struct {

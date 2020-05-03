@@ -201,7 +201,7 @@ func (r *SyncGroupReconciler) createSync(ctx context.Context, nsname types.Names
 	}
 
 	if url := syncgroup.Spec.Source.URL; url != nil {
-		sync.Spec.URL = *url
+		sync.Spec.Source.URL = *url
 	} else if ref := syncgroup.Spec.Source.GitRepository; ref != nil {
 		var gitrepo sourcev1alpha1.GitRepository
 		if err := r.Get(ctx, types.NamespacedName{
@@ -215,7 +215,8 @@ func (r *SyncGroupReconciler) createSync(ctx context.Context, nsname types.Names
 		if artifact == nil {
 			return nil, fmt.Errorf("artifact for referenced git repository %q is not ready", gitrepo.Name)
 		}
-		sync.Spec.URL = artifact.URL
+		sync.Spec.Source.URL = artifact.URL
+		//sync.Spec.Source.Revision = ...
 	}
 
 	sync.Spec.Paths = syncgroup.Spec.Source.Paths

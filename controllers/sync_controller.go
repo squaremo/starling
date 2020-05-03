@@ -87,18 +87,21 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	// failures will be logged and and a retry attempted after a
 	// delay. TODO most if not all should result in a status update.
 
-	response, err := http.Get(sync.Spec.URL)
+	url := sync.Spec.Source.URL
+	response, err := http.Get(url)
 	if err != nil {
-		log.V(debug).Info("failed to fetch package URL", "error", err, "url", sync.Spec.URL)
+		log.V(debug).Info("failed to fetch package URL", "error", err, "url", url)
 		return ctrl.Result{RequeueAfter: retryDelay}, nil
 	}
 
 	if response.StatusCode != http.StatusOK {
-		log.V(debug).Info("response was not HTTP 200; will retry", "code", response.StatusCode)
+		log.V(debug).Info("response was not HTTP 200; will retry",
+			"url", url,
+			"code", response.StatusCode)
 		return ctrl.Result{RequeueAfter: retryDelay}, nil
 	}
 
-	log.V(debug).Info("got package file", "url", sync.Spec.URL)
+	log.V(debug).Info("got package file", "url", url)
 	defer response.Body.Close()
 
 	tmpdir, err := ioutil.TempDir("", "sync-")
@@ -124,7 +127,7 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		// This is likely to be a configuration problem, rather than
 		// transitory; for that reason, log it but don't retry until
 		// something changes.
-		log.Error(err, "error expanding archive", "url", sync.Spec.URL)
+		log.Error(err, "error expanding archive", "url", url)
 		return ctrl.Result{}, nil
 	}
 
