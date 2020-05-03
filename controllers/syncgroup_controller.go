@@ -174,6 +174,7 @@ func (r *SyncGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&syncv1alpha1.SyncGroup{}).
+		Owns(&syncv1alpha1.Sync{}).
 		Complete(r)
 }
 
