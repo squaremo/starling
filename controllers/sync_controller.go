@@ -44,6 +44,8 @@ import (
 )
 
 const retryDelay = 20 * time.Second
+const debug = 1
+const trace = 2
 
 // SyncReconciler reconciles a Sync object
 type SyncReconciler struct {
@@ -61,40 +63,48 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 
 	var sync syncv1alpha1.Sync
 	if err := r.Get(ctx, req.NamespacedName, &sync); err != nil {
+		// Nothing I can do here; if it's something other than not
+		// found, let it be requeued.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// If the sync refers to a cluster, get a kubeconfig from it
+	// If the sync refers to a cluster, check that the cluster
+	// exists. If not, I can't do anything here.
 	if sync.Spec.Cluster != nil {
 		var cluster clusterv1alpha3.Cluster
 		if err := r.Get(ctx, types.NamespacedName{
 			Name:      sync.Spec.Cluster.Name,
-			Namespace: sync.Namespace,
+			Namespace: sync.GetNamespace(),
 		}, &cluster); err != nil {
 			// If this Sync refers to a missing cluster, it'll get
-			// deleted at some point anyway
-			return ctrl.Result{RequeueAfter: retryDelay}, client.IgnoreNotFound(err)
+			// deleted at some point anyway.
+			return ctrl.Result{}, client.IgnoreNotFound(err)
 		}
 	}
 
+	// Attempt to fetch the URL of the package being synced. Many of
+	// the possible failures here will be transitory, so in general,
+	// failures will be logged and and a retry attempted after a
+	// delay. TODO most if not all should result in a status update.
+
 	response, err := http.Get(sync.Spec.URL)
 	if err != nil {
-		log.Error(err, "failed to fetch package URL", "url", sync.Spec.URL)
-		return ctrl.Result{RequeueAfter: retryDelay}, err
+		log.V(debug).Info("failed to fetch package URL", "error", err, "url", sync.Spec.URL)
+		return ctrl.Result{RequeueAfter: retryDelay}, nil
 	}
 
 	if response.StatusCode != http.StatusOK {
-		log.Info("response was not HTTP 200", "code", response.StatusCode)
-		return ctrl.Result{RequeueAfter: retryDelay}, nil // FIXME this is going to spam isn't it
+		log.V(debug).Info("response was not HTTP 200; will retry", "code", response.StatusCode)
+		return ctrl.Result{RequeueAfter: retryDelay}, nil
 	}
 
-	log.Info("got package file", "url", sync.Spec.URL)
+	log.V(debug).Info("got package file", "url", sync.Spec.URL)
 	defer response.Body.Close()
 
 	tmpdir, err := ioutil.TempDir("", "sync-")
 	if err != nil {
-		log.Error(err, "failed to create temp dir for expanded source")
-		return ctrl.Result{RequeueAfter: retryDelay}, err
+		// failing to create a tmpdir qualifies as a proper error
+		return ctrl.Result{}, err
 	}
 	defer os.RemoveAll(tmpdir)
 
@@ -108,11 +118,14 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		err = untargzip(response.Body, sourcedir, log)
 	default:
 		err = fmt.Errorf("unsupported content type %q", contentType)
-		log.Error(err, "response contained unsupported archive format")
 	}
 
 	if err != nil {
-		return ctrl.Result{RequeueAfter: retryDelay}, err
+		// This is likely to be a configuration problem, rather than
+		// transitory; for that reason, log it but don't retry until
+		// something changes.
+		log.Error(err, "error expanding archive", "url", sync.Spec.URL)
+		return ctrl.Result{}, nil
 	}
 
 	applyArgs := []string{"apply"}
@@ -124,11 +137,17 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		}
 		kubeconfig, err := kcfg.FromSecret(ctx, r.Client, clusterName)
 		if err != nil {
-			log.Error(err, "failed to get kubeconfig secret for cluster", "cluster", clusterName)
-			return ctrl.Result{}, err
+			// If it can't fnd the kubeconfig, it can't proceed. Maybe
+			// the cluster isn't ready yet. In any case, it's not a
+			// fatal problem; just retry in a bit.
+			log.V(debug).Info("failed to get kubeconfig secret for cluster", "error", err, "cluster", clusterName)
+			return ctrl.Result{RequeueAfter: retryDelay}, nil
 		}
 		kubeconfigPath := filepath.Join(tmpdir, "kubeconfig")
-		ioutil.WriteFile(kubeconfigPath, kubeconfig, os.FileMode(0400))
+		if err := ioutil.WriteFile(kubeconfigPath, kubeconfig, os.FileMode(0400)); err != nil {
+			// If it can't write to the filesystem, that _is_ a problem
+			return ctrl.Result{}, err
+		}
 		applyArgs = append(applyArgs, "--kubeconfig", kubeconfigPath)
 	}
 
@@ -142,11 +161,11 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 
 	cmd := exec.CommandContext(ctx, "kubectl", applyArgs...)
 	out, err := cmd.CombinedOutput()
-	if err != nil {
-		log.Error(err, "error running kubectl", "output", string(out))
-	} else {
-		log.Info("kubectl apply output", "output", string(out))
-	}
+	// kubectl can exit with non-zero because it couldn't connect, or
+	// because it didn't apply things cleanly, and those are different
+	// kinds of problem here. For now, just log the result. Later,
+	// it'll go in the status.
+	log.Info("kubectl apply result", "exit-code", cmd.ProcessState.ExitCode(), "output", string(out))
 
 	return ctrl.Result{RequeueAfter: sync.Spec.Interval.Duration}, nil
 }
@@ -159,10 +178,12 @@ func (r *SyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 // ---
 
+// untargzip unpacks a gzipped-tarball. It uses a logger to report
+// unexpected problems; mostly it will just return the error, on the
+// basis that next time might yield a different result.
 func untargzip(body io.Reader, tmpdir string, log logr.Logger) error {
 	unzip, err := gzip.NewReader(body)
 	if err != nil {
-		log.Error(err, "not a gzip")
 		return err
 	}
 
@@ -174,7 +195,6 @@ func untargzip(body io.Reader, tmpdir string, log logr.Logger) error {
 			break // End of archive
 		}
 		if err != nil {
-			log.Error(err, "error while unpacking tarball")
 			return err
 		}
 
@@ -208,10 +228,12 @@ func untargzip(body io.Reader, tmpdir string, log logr.Logger) error {
 		numberOfFiles++
 	}
 
-	log.Info("unpacked tarball", "tmpdir", tmpdir, "file-count", numberOfFiles)
+	log.V(debug).Info("unpacked tarball", "tmpdir", tmpdir, "file-count", numberOfFiles)
 	return nil
 }
 
+// unzip unpacks a ZIP archive. It follows the same logging rationale
+// as untargzip.
 func unzip(body io.Reader, tmpdir string, log logr.Logger) error {
 	// The zip reader needs random access (that is
 	// io.ReaderAt). Rather than try to do some tricky on-demand
@@ -220,13 +242,11 @@ func unzip(body io.Reader, tmpdir string, log logr.Logger) error {
 	buf := new(bytes.Buffer)
 	size, err := io.Copy(buf, body)
 	if err != nil {
-		log.Error(err, "could not read from response body")
 		return err
 	}
 
 	zipReader, err := zip.NewReader(bytes.NewReader(buf.Bytes()), size)
 	if err != nil {
-		log.Error(err, "could not read response as ZIP file")
 		return err
 	}
 	numberOfFiles := 0
@@ -262,6 +282,6 @@ func unzip(body io.Reader, tmpdir string, log logr.Logger) error {
 		numberOfFiles++
 	}
 
-	log.Info("unpacked zip", "tmpdir", tmpdir, "file-count", numberOfFiles)
+	log.V(debug).Info("unpacked zip", "tmpdir", tmpdir, "file-count", numberOfFiles)
 	return nil
 }
