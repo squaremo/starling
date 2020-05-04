@@ -103,6 +103,12 @@ spec:
               description: LastAppliedTime records the last time a sync was attempted
               format: date-time
               type: string
+            observedGeneration:
+              description: ObservedGeneration (from metadata.generation) is the generation
+                last observed by the controller. This is used so the controller can
+                know whether it needs to react to a change, or simply update the status.
+              format: int64
+              type: integer
           type: object
       type: object
   version: v1alpha1

@@ -74,11 +74,19 @@ const (
 type SyncStatus struct {
 	// LastApplySource records the source that was set last time a
 	// sync was attempted.
+	// +optional
 	LastApplySource *SyncSource `json:"lastApplySource,omitempty"`
 	// LastAppliedTime records the last time a sync was attempted
-	LastApplyTime metav1.Time `json:"lastApplyTime,omitempty"`
+	// +optional
+	LastApplyTime *metav1.Time `json:"lastApplyTime,omitempty"`
 	// LastApplyResult records the outcome of the last sync attempt
+	// +optional
 	LastApplyResult ApplyResult `json:"lastApplyResult,omitempty"`
+	// ObservedGeneration (from metadata.generation) is the generation
+	// last observed by the controller. This is used so the controller
+	// can know whether it needs to react to a change, or simply
+	// update the status.
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 }
 
 // +kubebuilder:object:root=true

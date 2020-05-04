@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clusterv1alpha3 "sigs.k8s.io/cluster-api/api/v1alpha3"
@@ -66,6 +67,14 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		// Nothing I can do here; if it's something other than not
 		// found, let it be requeued.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	// Check whether we need to actually run a sync. There are two conditions:
+	//  - at least Interval has passed since the last sync
+	//  - the spec has changed
+	now := time.Now().UTC()
+	if !needsApply(&sync, now) {
+		return ctrl.Result{}, nil
 	}
 
 	// If the sync refers to a cluster, check that the cluster
@@ -164,11 +173,25 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 
 	cmd := exec.CommandContext(ctx, "kubectl", applyArgs...)
 	out, err := cmd.CombinedOutput()
+
+	result := syncv1alpha1.ApplySuccess
+	if err != nil {
+		result = syncv1alpha1.ApplyFail
+	}
+
 	// kubectl can exit with non-zero because it couldn't connect, or
 	// because it didn't apply things cleanly, and those are different
 	// kinds of problem here. For now, just log the result. Later,
 	// it'll go in the status.
 	log.Info("kubectl apply result", "exit-code", cmd.ProcessState.ExitCode(), "output", string(out))
+
+	sync.Status.LastApplyTime = &metav1.Time{Time: now}
+	sync.Status.LastApplyResult = result
+	sync.Status.LastApplySource = &sync.Spec.Source
+	sync.Status.ObservedGeneration = sync.Generation
+	if err = r.Status().Update(ctx, &sync); err != nil {
+		return ctrl.Result{}, err
+	}
 
 	return ctrl.Result{RequeueAfter: sync.Spec.Interval.Duration}, nil
 }
@@ -180,6 +203,12 @@ func (r *SyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 // ---
+
+func needsApply(sync *syncv1alpha1.Sync, now time.Time) bool {
+	return sync.Generation > sync.Status.ObservedGeneration ||
+		sync.Status.LastApplyTime == nil ||
+		now.After(sync.Status.LastApplyTime.Time.Add(sync.Spec.Interval.Duration))
+}
 
 // untargzip unpacks a gzipped-tarball. It uses a logger to report
 // unexpected problems; mostly it will just return the error, on the
