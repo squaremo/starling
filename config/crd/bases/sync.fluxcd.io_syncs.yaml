@@ -50,17 +50,17 @@ spec:
                 to the cluster. Syncs may be processed slower than this, depending
                 on load; or may occur more often if the sync in question is updated.
               type: string
-            paths:
-              description: Paths gives the paths to include in the sync. If using
-                a kustomization, there should be only one, ending in 'kustomization.yaml'.
-                If missing, the root directory will be used.
-              items:
-                type: string
-              type: array
             source:
               description: Source is the location from which to get configuration
                 to sync.
               properties:
+                paths:
+                  description: Paths gives the paths to include in the sync. If using
+                    a kustomization, there should be only one, ending in 'kustomization.yaml'.
+                    If missing, the root directory will be used.
+                  items:
+                    type: string
+                  type: array
                 revision:
                   description: Revision identifies the commit from which the URL is
                     generated. This accompanies the URL so that it can be explicitly
@@ -87,6 +87,13 @@ spec:
               description: LastApplySource records the source that was set last time
                 a sync was attempted.
               properties:
+                paths:
+                  description: Paths gives the paths to include in the sync. If using
+                    a kustomization, there should be only one, ending in 'kustomization.yaml'.
+                    If missing, the root directory will be used.
+                  items:
+                    type: string
+                  type: array
                 revision:
                   description: Revision identifies the commit from which the URL is
                     generated. This accompanies the URL so that it can be explicitly

@@ -219,7 +219,7 @@ func (r *SyncGroupReconciler) createSync(ctx context.Context, nsname types.Names
 		//sync.Spec.Source.Revision = ...
 	}
 
-	sync.Spec.Paths = syncgroup.Spec.Source.Paths
+	sync.Spec.Source.Paths = syncgroup.Spec.Source.Paths
 	sync.Spec.Interval = syncgroup.Spec.Interval
 
 	return &sync, r.Create(ctx, &sync)

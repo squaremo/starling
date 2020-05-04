@@ -34,6 +34,36 @@ type SyncSource struct {
 	// explicitly recorded in the status.
 	// +optional
 	Revision string `json:"revision"`
+	// Paths gives the paths to include in the sync. If using a
+	// kustomization, there should be only one, ending in
+	// 'kustomization.yaml'. If missing, the root directory will be
+	// used.
+	// +optional
+	Paths []string `json:"paths,omitempty"`
+}
+
+// Equiv returns true if the supplied SyncSource is equivalent to this
+// SyncSource. Equivalence is weaker than `Equal` -- it just means
+// "are these interchangeable when used to sync".
+func (src1 *SyncSource) Equiv(src2 *SyncSource) bool {
+	if src2 == nil {
+		return false
+	}
+	if src1.URL != src2.URL || src1.Revision != src2.Revision {
+		return false
+	}
+	// Having the same paths in a different order counts as different;
+	// a more sophisticated predicate would sort (copies), clean the
+	// paths, and compare those.
+	if len(src1.Paths) != len(src2.Paths) {
+		return false
+	}
+	for i, p := range src1.Paths {
+		if p != src2.Paths[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // SyncSpec defines the desired state of Sync
@@ -41,14 +71,6 @@ type SyncSpec struct {
 	// Source is the location from which to get configuration to sync.
 	// +required
 	Source SyncSource `json:"source"`
-
-	// Paths gives the paths to include in the sync. If using a
-	// kustomization, there should be only one, ending in
-	// 'kustomization.yaml'. If missing, the root directory will be
-	// used.
-	// +optional
-	Paths []string `json:"paths"`
-
 	// Interval is the target period for reapplying the config to the
 	// cluster. Syncs may be processed slower than this, depending on
 	// load; or may occur more often if the sync in question is

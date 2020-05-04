@@ -71,10 +71,11 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 
 	// Check whether we need to actually run a sync. There are two conditions:
 	//  - at least Interval has passed since the last sync
-	//  - the spec has changed
+	//  - the source has changed
 	now := time.Now().UTC()
-	if !needsApply(&sync, now) {
-		return ctrl.Result{}, nil
+	if ok, when := needsApply(&sync, now); !ok {
+		return ctrl.Result{RequeueAfter: when}, nil
+		// otherwise let it run on to do the sync
 	}
 
 	// If the sync refers to a cluster, check that the cluster
@@ -163,10 +164,10 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		applyArgs = append(applyArgs, "--kubeconfig", kubeconfigPath)
 	}
 
-	if len(sync.Spec.Paths) == 0 {
+	if len(sync.Spec.Source.Paths) == 0 {
 		applyArgs = append(applyArgs, "-f", sourcedir)
 	}
-	for _, path := range sync.Spec.Paths {
+	for _, path := range sync.Spec.Source.Paths {
 		// FIXME guard against parent paths
 		applyArgs = append(applyArgs, "-f", filepath.Join(sourcedir, path))
 	}
@@ -204,10 +205,19 @@ func (r *SyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 // ---
 
-func needsApply(sync *syncv1alpha1.Sync, now time.Time) bool {
-	return sync.Generation > sync.Status.ObservedGeneration ||
+// needsApply calculates whether a sync needs to run right now, and if
+// not, how long until it does.
+func needsApply(sync *syncv1alpha1.Sync, now time.Time) (bool, time.Duration) {
+	if sync.Status.LastApplySource == nil ||
 		sync.Status.LastApplyTime == nil ||
-		now.After(sync.Status.LastApplyTime.Time.Add(sync.Spec.Interval.Duration))
+		!(&sync.Spec.Source).Equiv(sync.Status.LastApplySource) {
+		return true, 0
+	}
+	when := sync.Spec.Interval.Duration - now.Sub(sync.Status.LastApplyTime.Time)
+	if when < time.Second { // close enough to not bother requeueing
+		return true, 0
+	}
+	return false, when
 }
 
 // untargzip unpacks a gzipped-tarball. It uses a logger to report
