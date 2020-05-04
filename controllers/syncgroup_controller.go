@@ -161,32 +161,7 @@ func (r *SyncGroupReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		return ctrl.Result{}, err
 	}
 
-	// Figure out which clusters have a Sync attached to them, which
-	// Syncs are extraneous, and which are just right.
-	clustersToSync := map[string]struct{}{}
-	var extraSyncs []*syncv1alpha1.Sync
-	var okSyncs []*syncv1alpha1.Sync
-
-	for _, c := range clusters.Items {
-		clustersToSync[c.Name] = struct{}{}
-	}
-	for _, s := range syncs.Items {
-		if s.Spec.Cluster == nil {
-			extraSyncs = append(extraSyncs, &s)
-			log.V(trace).Info("found local sync owned by SyncGroup", "sync", s.Name)
-			continue
-		}
-		clusterName := s.Spec.Cluster.Name
-		if _, ok := clustersToSync[clusterName]; ok {
-			okSyncs = append(okSyncs, &s)
-			delete(clustersToSync, clusterName)
-			log.V(trace).Info("found sync for cluster", "cluster", clusterName, "sync", s.Name)
-		} else {
-			extraSyncs = append(extraSyncs, &s)
-			log.V(trace).Info("found extra sync for cluster", "cluster", clusterName, "sync", s.Name)
-		}
-	}
-
+	okSyncs, extraSyncs, clustersToSync := partitionSyncs(syncs.Items, clusters.Items)
 	for _, s := range extraSyncs {
 		if err := r.Delete(ctx, s, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil {
 			log.Error(err, "failed to delete Sync")
@@ -267,27 +242,6 @@ func (r *SyncGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return err
 	}
 
-	// This is a mapping from Sources to any SyncGroups that refer to
-	// them. obj is a GitRepository, and the requests have names of
-	// SyncGroups.
-	syncgroupsForGitRepo := func(obj handler.MapObject) []reconcile.Request {
-		ctx := context.Background()
-		var syncgroups syncv1alpha1.SyncGroupList
-		if err := r.List(ctx, &syncgroups, client.InNamespace(obj.Meta.GetNamespace()), client.MatchingFields{sourceRefKey: obj.Meta.GetName()}); err != nil {
-			r.Log.Error(err, "failed to list SyncGroups for GitRepository", "name", types.NamespacedName{
-				Name:      obj.Meta.GetName(),
-				Namespace: obj.Meta.GetNamespace(),
-			})
-			return nil
-		}
-		reqs := make([]reconcile.Request, len(syncgroups.Items), len(syncgroups.Items))
-		for i := range syncgroups.Items {
-			reqs[i].NamespacedName.Name = syncgroups.Items[i].GetName()
-			reqs[i].NamespacedName.Namespace = syncgroups.Items[i].GetNamespace()
-		}
-		return reqs
-	}
-
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&syncv1alpha1.SyncGroup{}).
 		// any time a Sync changes, reconcile its owner SyncGroup
@@ -296,9 +250,27 @@ func (r *SyncGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// refer to it
 		Watches(&source.Kind{Type: &sourcev1alpha1.GitRepository{}},
 			&handler.EnqueueRequestsFromMapFunc{
-				ToRequests: handler.ToRequestsFunc(syncgroupsForGitRepo),
+				ToRequests: handler.ToRequestsFunc(r.syncGroupsForGitRepo),
 			}).
 		Complete(r)
+}
+
+func (r SyncGroupReconciler) syncGroupsForGitRepo(obj handler.MapObject) []reconcile.Request {
+	ctx := context.Background()
+	var syncgroups syncv1alpha1.SyncGroupList
+	if err := r.List(ctx, &syncgroups, client.InNamespace(obj.Meta.GetNamespace()), client.MatchingFields{sourceRefKey: obj.Meta.GetName()}); err != nil {
+		r.Log.Error(err, "failed to list SyncGroups for GitRepository", "name", types.NamespacedName{
+			Name:      obj.Meta.GetName(),
+			Namespace: obj.Meta.GetNamespace(),
+		})
+		return nil
+	}
+	reqs := make([]reconcile.Request, len(syncgroups.Items), len(syncgroups.Items))
+	for i := range syncgroups.Items {
+		reqs[i].NamespacedName.Name = syncgroups.Items[i].GetName()
+		reqs[i].NamespacedName.Namespace = syncgroups.Items[i].GetNamespace()
+	}
+	return reqs
 }
 
 func (r *SyncGroupReconciler) createSync(ctx context.Context, syncgroup *syncv1alpha1.SyncGroup, nsname types.NamespacedName, spec syncv1alpha1.SyncSpec, clusterRef *corev1.LocalObjectReference) (*syncv1alpha1.Sync, error) {
@@ -322,6 +294,33 @@ func (r *SyncGroupReconciler) createSync(ctx context.Context, syncgroup *syncv1a
 	return &sync, r.Create(ctx, &sync)
 }
 
+func partitionSyncs(syncs []syncv1alpha1.Sync, clusters []clusterv1alpha3.Cluster) (ok, extra []*syncv1alpha1.Sync, missing map[string]struct{}) {
+	// Figure out which clusters have a Sync attached to them, which
+	// Syncs are extraneous, and which are just right.
+	clustersToSync := map[string]struct{}{}
+	var extraSyncs []*syncv1alpha1.Sync
+	var okSyncs []*syncv1alpha1.Sync
+
+	for _, c := range clusters {
+		clustersToSync[c.Name] = struct{}{}
+	}
+	for _, s := range syncs {
+		if s.Spec.Cluster == nil {
+			extraSyncs = append(extraSyncs, &s)
+			continue
+		}
+		clusterName := s.Spec.Cluster.Name
+		if _, ok := clustersToSync[clusterName]; ok {
+			okSyncs = append(okSyncs, &s)
+			delete(clustersToSync, clusterName)
+		} else {
+			extraSyncs = append(extraSyncs, &s)
+		}
+	}
+	return okSyncs, extraSyncs, clustersToSync
+}
+
+// Is spec1 equivalent to spec2, modulo the cluster reference?
 func specEquiv(spec1, spec2 *syncv1alpha1.SyncSpec) bool {
 	return spec1.Interval == spec2.Interval &&
 		(&spec1.Source).Equiv(&spec2.Source)
