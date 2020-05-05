@@ -50,6 +50,9 @@ const sourceRefKey = ".spec.source.gitRepository"
 
 // +kubebuilder:rbac:groups=sync.fluxcd.io,resources=syncgroups,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=sync.fluxcd.io,resources=syncgroups/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=sync.fluxcd.io,resources=syncs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=source.fluxcd.io,resources=gitrepositories,verbs=get;list;watch
+// +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=clusters,verbs=get;list;watch
 
 func (r *SyncGroupReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	ctx := context.Background()
