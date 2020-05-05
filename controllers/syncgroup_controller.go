@@ -333,7 +333,14 @@ func partitionSyncs(syncs []syncv1alpha1.Sync, clusters []clusterv1alpha3.Cluste
 	var okSyncs []*syncv1alpha1.Sync
 
 	for _, c := range clusters {
-		clustersToSync[c.Name] = struct{}{}
+		// Only include it as a live cluster if it's provisioned and
+		// the control plane is ready and the infrastructure is ready;
+		// this is as close an indication as you get for a cluster
+		// that it is ready to be used, as far as I can tell.
+		if c.Status.GetTypedPhase() == clusterv1alpha3.ClusterPhaseProvisioned &&
+			c.Status.ControlPlaneReady && c.Status.InfrastructureReady {
+			clustersToSync[c.Name] = struct{}{}
+		}
 	}
 	for _, s := range syncs {
 		if s.Spec.Cluster == nil {

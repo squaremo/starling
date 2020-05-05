@@ -105,7 +105,7 @@ type SyncGroupStatus struct {
 	// the controller. NB this is a SyncSource, since it encodes the
 	// actual revision etc. that will be rolled out to Sync objects.
 	// +optional
-	ObservedSource *SyncSource `json:"observedSource"`
+	ObservedSource *SyncSource `json:"observedSource,omitempty"`
 }
 
 // +kubebuilder:object:root=true
