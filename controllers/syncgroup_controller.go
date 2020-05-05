@@ -163,7 +163,7 @@ func (r *SyncGroupReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	// clusters that match the selector.
 	var clusters clusterv1alpha3.ClusterList
 
-	selector, err := metav1.LabelSelectorAsSelector(syncgroup.Spec.Selector)
+	selector, err := syncgroup.Selector()
 	if err != nil {
 		log.Error(err, fmt.Sprintf("could not make selector from %v", syncgroup.Spec.Selector))
 		return ctrl.Result{}, err
@@ -268,9 +268,17 @@ func (r *SyncGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&handler.EnqueueRequestsFromMapFunc{
 				ToRequests: handler.ToRequestsFunc(r.syncGroupsForGitRepo),
 			}).
+		Watches(&source.Kind{Type: &clusterv1alpha3.Cluster{}},
+			&handler.EnqueueRequestsFromMapFunc{
+				ToRequests: handler.ToRequestsFunc(r.syncGroupsForCluster),
+			}).
 		Complete(r)
 }
 
+// syncGroupsForGitRepo gets all the SyncGroup objects that use a
+// particular GitRepository object, so that they can keep up to date
+// with it. This requires the index for field sourceRefKey to have
+// been added.
 func (r SyncGroupReconciler) syncGroupsForGitRepo(obj handler.MapObject) []reconcile.Request {
 	ctx := context.Background()
 	var syncgroups syncv1alpha1.SyncGroupList

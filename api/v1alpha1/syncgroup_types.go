@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 )
 
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
@@ -115,6 +116,10 @@ type SyncGroup struct {
 
 	Spec   SyncGroupSpec   `json:"spec,omitempty"`
 	Status SyncGroupStatus `json:"status,omitempty"`
+}
+
+func (sg *SyncGroup) Selector() (labels.Selector, error) {
+	return metav1.LabelSelectorAsSelector(sg.Spec.Selector)
 }
 
 // +kubebuilder:object:root=true
