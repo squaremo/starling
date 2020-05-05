@@ -8,6 +8,16 @@ metadata:
   creationTimestamp: null
   name: syncgroups.sync.fluxcd.io
 spec:
+  additionalPrinterColumns:
+  - JSONPath: .status.summary.updated
+    name: Updated
+    type: string
+  - JSONPath: .status.summary.success
+    name: Succeeded
+    type: string
+  - JSONPath: .status.summary.fail
+    name: Failed
+    type: string
   group: sync.fluxcd.io
   names:
     kind: SyncGroup
@@ -15,6 +25,8 @@ spec:
     plural: syncgroups
     singular: syncgroup
   scope: Namespaced
+  subresources:
+    status: {}
   validation:
     openAPIV3Schema:
       description: SyncGroup is the Schema for the syncgroups API
@@ -112,6 +124,32 @@ spec:
           type: object
         status:
           description: SyncGroupStatus defines the observed state of SyncGroup
+          properties:
+            summary:
+              description: Summary gives the counts of Syncs in various states
+              properties:
+                fail:
+                  description: Fail gives the number of Syncs that have completed
+                    and failed
+                  type: integer
+                success:
+                  description: Success gives the number of Syncs that have complete
+                    and succeeded
+                  type: integer
+                syncTotal:
+                  description: Total gives the total number of Syncs owned by this
+                    SyncGroup
+                  type: integer
+                updated:
+                  description: Updated gives the number of Syncs that have been updated
+                    since last syncing
+                  type: integer
+              required:
+              - fail
+              - success
+              - syncTotal
+              - updated
+              type: object
           type: object
       type: object
   version: v1alpha1

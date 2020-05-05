@@ -8,6 +8,13 @@ metadata:
   creationTimestamp: null
   name: syncs.sync.fluxcd.io
 spec:
+  additionalPrinterColumns:
+  - JSONPath: .status.lastApplyResult
+    name: Last result
+    type: string
+  - JSONPath: .status.lastApplyTime
+    name: Last applied
+    type: string
   group: sync.fluxcd.io
   names:
     kind: Sync

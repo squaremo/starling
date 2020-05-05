@@ -55,13 +55,58 @@ type Source struct {
 	Paths []string `json:"paths,omitempty"`
 }
 
+type SyncSummary struct {
+	// Total gives the total number of Syncs owned by this
+	// SyncGroup
+	Total int `json:"syncTotal"`
+	// Updated gives the number of Syncs that have been updated
+	// since last syncing
+	Updated int `json:"updated"`
+	// Fail gives the number of Syncs that have completed and failed
+	Fail int `json:"fail"`
+	// Success gives the number of Syncs that have complete and
+	// succeeded
+	Success int `json:"success"`
+}
+
+// Register a sync depending on its spec and status
+func (sum *SyncSummary) Count(sync *Sync) {
+	if sync.Status.LastApplySource == nil ||
+		!sync.Status.LastApplySource.Equiv(&sync.Spec.Source) {
+		sum.Updated++
+		return
+	}
+	switch sync.Status.LastApplyResult {
+	case ApplySuccess:
+		sum.Success++
+	case ApplyFail:
+		sum.Fail++
+	default: // if neither success nor fail, but it has a
+		// LastApplySource .. unknown, assume it'll be resolved at
+		// some point
+		sum.Updated++
+	}
+}
+
+// Calculate the total from the other fields, since its value depends
+// on those.
+func (sum *SyncSummary) CalcTotal() {
+	sum.Total = sum.Updated + sum.Fail + sum.Success
+}
+
 // SyncGroupStatus defines the observed state of SyncGroup
 type SyncGroupStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// Summary gives the counts of Syncs in
+	// various states
+	// +optional
+	Summary *SyncSummary `json:"summary,omitempty"`
 }
 
 // +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Updated",type=string,JSONPath=`.status.summary.updated`
+// +kubebuilder:printcolumn:name="Succeeded",type=string,JSONPath=`.status.summary.success`
+// +kubebuilder:printcolumn:name="Failed",type=string,JSONPath=`.status.summary.fail`
 
 // SyncGroup is the Schema for the syncgroups API
 type SyncGroup struct {

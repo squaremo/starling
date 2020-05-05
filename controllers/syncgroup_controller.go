@@ -60,6 +60,31 @@ func (r *SyncGroupReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	// Now, get a list of syncs that are owned by this syncgroup,
+	// compare it with the syncs I _should_ have, and delete or create
+	// as appropriate.
+	var syncs syncv1alpha1.SyncList
+	if err := r.List(ctx, &syncs, client.InNamespace(req.Namespace), client.MatchingFields{syncOwnerKey: req.Name}); err != nil {
+		log.Error(err, "listing syncs owned by this syncgroup")
+		return ctrl.Result{}, err
+	}
+
+	// --- update the status
+
+	// Construct a summary, which will get filled out and put in the
+	// status
+	summary := &syncv1alpha1.SyncSummary{}
+	for _, s := range syncs.Items {
+		summary.Count(&s)
+	}
+	summary.CalcTotal()
+	syncgroup.Status.Summary = summary
+	if err := r.Status().Update(ctx, &syncgroup); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// --- creating, deleting, updating syncs
+
 	// To know whether a given sync has to be updated, speculatively
 	// create a new sync spec based on the current state
 	spec := syncv1alpha1.SyncSpec{}
@@ -83,18 +108,8 @@ func (r *SyncGroupReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		spec.Source.URL = artifact.URL
 		spec.Source.Revision = artifact.Revision
 	}
-
 	spec.Source.Paths = syncgroup.Spec.Source.Paths
 	spec.Interval = syncgroup.Spec.Interval
-
-	// Now, get a list of syncs that are owned by this syncgroup,
-	// compare it with the syncs I _should_ have, and delete or create
-	// as appropriate.
-	var syncs syncv1alpha1.SyncList
-	if err := r.List(ctx, &syncs, client.InNamespace(req.Namespace), client.MatchingFields{syncOwnerKey: req.Name}); err != nil {
-		log.Error(err, "listing syncs owned by this syncgroup")
-		return ctrl.Result{}, err
-	}
 
 	// When the selector is missing entirely, there's just the one
 	// possible target -- the local cluster -- so there should be
@@ -126,7 +141,7 @@ func (r *SyncGroupReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 					log.Error(err, "failed to update local Sync")
 					// this is a problem, but it would be good to
 					// attempt to delete the other syncs too, so run
-					// on
+					// on...
 				}
 			}
 
@@ -162,6 +177,7 @@ func (r *SyncGroupReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	}
 
 	okSyncs, extraSyncs, clustersToSync := partitionSyncs(syncs.Items, clusters.Items)
+
 	for _, s := range extraSyncs {
 		if err := r.Delete(ctx, s, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil {
 			log.Error(err, "failed to delete Sync")

@@ -113,6 +113,8 @@ type SyncStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Last result",type=string,JSONPath=`.status.lastApplyResult`
+// +kubebuilder:printcolumn:name="Last applied",type=string,JSONPath=`.status.lastApplyTime`
 
 // Sync is the Schema for the syncs API
 type Sync struct {
