@@ -111,6 +111,13 @@ func (r *SyncGroupReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	spec.Source.Paths = syncgroup.Spec.Source.Paths
 	spec.Interval = syncgroup.Spec.Interval
 
+	// Write the newly calculated Source to the status, so it can be
+	// observed
+	syncgroup.Status.ObservedSource = &spec.Source
+	if err := r.Status().Update(ctx, &syncgroup); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	// When the selector is missing entirely, there's just the one
 	// possible target -- the local cluster -- so there should be
 	// exactly one Sync owned by the SyncGroup.

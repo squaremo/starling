@@ -113,6 +113,7 @@ type SyncStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Revision",type=string,JSONPath=`.status.lastApplySource.revision`
 // +kubebuilder:printcolumn:name="Last result",type=string,JSONPath=`.status.lastApplyResult`
 // +kubebuilder:printcolumn:name="Last applied",type=string,JSONPath=`.status.lastApplyTime`
 

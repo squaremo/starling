@@ -101,10 +101,16 @@ type SyncGroupStatus struct {
 	// various states
 	// +optional
 	Summary *SyncSummary `json:"summary,omitempty"`
+	// ObservedSource gives the configuraton source, as last seen by
+	// the controller. NB this is a SyncSource, since it encodes the
+	// actual revision etc. that will be rolled out to Sync objects.
+	// +optional
+	ObservedSource *SyncSource `json:"observedSource"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Revision",type=string,JSONPath=`.status.observedSource.revision`
 // +kubebuilder:printcolumn:name="Updated",type=string,JSONPath=`.status.summary.updated`
 // +kubebuilder:printcolumn:name="Succeeded",type=string,JSONPath=`.status.summary.success`
 // +kubebuilder:printcolumn:name="Failed",type=string,JSONPath=`.status.summary.fail`

@@ -9,6 +9,9 @@ metadata:
   name: syncs.sync.fluxcd.io
 spec:
   additionalPrinterColumns:
+  - JSONPath: .status.lastApplySource.revision
+    name: Revision
+    type: string
   - JSONPath: .status.lastApplyResult
     name: Last result
     type: string
