@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clusterv1alpha3 "sigs.k8s.io/cluster-api/api/v1alpha3"
@@ -68,6 +69,15 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	// Check whether we need to actually run a sync. There are two conditions:
+	//  - at least Interval has passed since the last sync
+	//  - the source has changed
+	now := time.Now().UTC()
+	if ok, when := needsApply(&sync, now); !ok {
+		return ctrl.Result{RequeueAfter: when}, nil
+		// otherwise let it run on to do the sync
+	}
+
 	// If the sync refers to a cluster, check that the cluster
 	// exists. If not, I can't do anything here.
 	if sync.Spec.Cluster != nil {
@@ -87,18 +97,21 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	// failures will be logged and and a retry attempted after a
 	// delay. TODO most if not all should result in a status update.
 
-	response, err := http.Get(sync.Spec.URL)
+	url := sync.Spec.Source.URL
+	response, err := http.Get(url)
 	if err != nil {
-		log.V(debug).Info("failed to fetch package URL", "error", err, "url", sync.Spec.URL)
+		log.V(debug).Info("failed to fetch package URL", "error", err, "url", url)
 		return ctrl.Result{RequeueAfter: retryDelay}, nil
 	}
 
 	if response.StatusCode != http.StatusOK {
-		log.V(debug).Info("response was not HTTP 200; will retry", "code", response.StatusCode)
+		log.V(debug).Info("response was not HTTP 200; will retry",
+			"url", url,
+			"code", response.StatusCode)
 		return ctrl.Result{RequeueAfter: retryDelay}, nil
 	}
 
-	log.V(debug).Info("got package file", "url", sync.Spec.URL)
+	log.V(debug).Info("got package file", "url", url)
 	defer response.Body.Close()
 
 	tmpdir, err := ioutil.TempDir("", "sync-")
@@ -124,7 +137,7 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		// This is likely to be a configuration problem, rather than
 		// transitory; for that reason, log it but don't retry until
 		// something changes.
-		log.Error(err, "error expanding archive", "url", sync.Spec.URL)
+		log.Error(err, "error expanding archive", "url", url)
 		return ctrl.Result{}, nil
 	}
 
@@ -151,21 +164,35 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		applyArgs = append(applyArgs, "--kubeconfig", kubeconfigPath)
 	}
 
-	if len(sync.Spec.Paths) == 0 {
+	if len(sync.Spec.Source.Paths) == 0 {
 		applyArgs = append(applyArgs, "-f", sourcedir)
 	}
-	for _, path := range sync.Spec.Paths {
+	for _, path := range sync.Spec.Source.Paths {
 		// FIXME guard against parent paths
 		applyArgs = append(applyArgs, "-f", filepath.Join(sourcedir, path))
 	}
 
 	cmd := exec.CommandContext(ctx, "kubectl", applyArgs...)
 	out, err := cmd.CombinedOutput()
+
+	result := syncv1alpha1.ApplySuccess
+	if err != nil {
+		result = syncv1alpha1.ApplyFail
+	}
+
 	// kubectl can exit with non-zero because it couldn't connect, or
 	// because it didn't apply things cleanly, and those are different
 	// kinds of problem here. For now, just log the result. Later,
 	// it'll go in the status.
 	log.Info("kubectl apply result", "exit-code", cmd.ProcessState.ExitCode(), "output", string(out))
+
+	sync.Status.LastApplyTime = &metav1.Time{Time: now}
+	sync.Status.LastApplyResult = result
+	sync.Status.LastApplySource = &sync.Spec.Source
+	sync.Status.ObservedGeneration = sync.Generation
+	if err = r.Status().Update(ctx, &sync); err != nil {
+		return ctrl.Result{}, err
+	}
 
 	return ctrl.Result{RequeueAfter: sync.Spec.Interval.Duration}, nil
 }
@@ -177,6 +204,21 @@ func (r *SyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 // ---
+
+// needsApply calculates whether a sync needs to run right now, and if
+// not, how long until it does.
+func needsApply(sync *syncv1alpha1.Sync, now time.Time) (bool, time.Duration) {
+	if sync.Status.LastApplySource == nil ||
+		sync.Status.LastApplyTime == nil ||
+		!(&sync.Spec.Source).Equiv(sync.Status.LastApplySource) {
+		return true, 0
+	}
+	when := sync.Spec.Interval.Duration - now.Sub(sync.Status.LastApplyTime.Time)
+	if when < time.Second { // close enough to not bother requeueing
+		return true, 0
+	}
+	return false, when
+}
 
 // untargzip unpacks a gzipped-tarball. It uses a logger to report
 // unexpected problems; mostly it will just return the error, on the
