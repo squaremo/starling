@@ -44,7 +44,15 @@ import (
 	syncv1alpha1 "github.com/fluxcd/starling/api/v1alpha1"
 )
 
-const retryDelay = 20 * time.Second
+// controller-runtime treats errors very seriously and prints a big
+// stack trace and so on. In some cases, there's a problem that will
+// probably go away, no big deal; for those, I'll just log it and
+// RequeueAfter, rather than returning an error. (This misses out on
+// the backoff behaviour, but so be it).
+
+const clusterUnreadyRetryDelay = 20 * time.Second
+const transitoryErrorRetryDelay = 20 * time.Second
+
 const debug = 1
 const trace = 2
 
@@ -82,13 +90,28 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	// exists. If not, I can't do anything here.
 	if sync.Spec.Cluster != nil {
 		var cluster clusterv1alpha3.Cluster
-		if err := r.Get(ctx, types.NamespacedName{
+		clusterName := types.NamespacedName{
 			Name:      sync.Spec.Cluster.Name,
 			Namespace: sync.GetNamespace(),
-		}, &cluster); err != nil {
+		}
+		if err := r.Get(ctx, clusterName, &cluster); err != nil {
 			// If this Sync refers to a missing cluster, it'll get
 			// deleted at some point anyway.
 			return ctrl.Result{}, client.IgnoreNotFound(err)
+		}
+
+		// Only treat it as sync'able if it's provisioned and the
+		// control plane is initialised and the infrastructure is
+		// ready; this is as close an indication as you get for a
+		// cluster that it is ready to be used, as far as I can tell.
+		if !(cluster.Status.GetTypedPhase() == clusterv1alpha3.ClusterPhaseProvisioned &&
+			cluster.Status.ControlPlaneInitialized &&
+			cluster.Status.InfrastructureReady) {
+			// This isn't an error, but we do want to try again at
+			// some point. Watching clusters would be one way to do
+			// this, but just looking again is good enough for now.
+			log.V(debug).Info("cluster not ready", "cluster", clusterName)
+			return ctrl.Result{RequeueAfter: clusterUnreadyRetryDelay}, nil
 		}
 	}
 
@@ -101,14 +124,14 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	response, err := http.Get(url)
 	if err != nil {
 		log.V(debug).Info("failed to fetch package URL", "error", err, "url", url)
-		return ctrl.Result{RequeueAfter: retryDelay}, nil
+		return ctrl.Result{RequeueAfter: transitoryErrorRetryDelay}, nil
 	}
 
 	if response.StatusCode != http.StatusOK {
 		log.V(debug).Info("response was not HTTP 200; will retry",
 			"url", url,
 			"code", response.StatusCode)
-		return ctrl.Result{RequeueAfter: retryDelay}, nil
+		return ctrl.Result{RequeueAfter: transitoryErrorRetryDelay}, nil
 	}
 
 	log.V(debug).Info("got package file", "url", url)
@@ -154,7 +177,7 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 			// the cluster isn't ready yet. In any case, it's not a
 			// fatal problem; just retry in a bit.
 			log.V(debug).Info("failed to get kubeconfig secret for cluster", "error", err, "cluster", clusterName)
-			return ctrl.Result{RequeueAfter: retryDelay}, nil
+			return ctrl.Result{RequeueAfter: transitoryErrorRetryDelay}, nil
 		}
 		kubeconfigPath := filepath.Join(tmpdir, "kubeconfig")
 		if err := ioutil.WriteFile(kubeconfigPath, kubeconfig, os.FileMode(0400)); err != nil {
