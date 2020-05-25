@@ -1,12 +1,11 @@
-# A mechansim for being sensitive to dependency relations
+# A mechansim for being sensitive to dependence
 
 ## Summary
 
 This RFC presents an extension to the syncing machinery to account for
-relations between packages in which one package depends on another in
+relations between Syncs in which one Sync depend on another in
 some way.
 
-TODO define package or use another term
 TODO give outline of design here too
 
 ## Motivation
@@ -29,7 +28,9 @@ something that isn't present".
 
 ### The shape of the problem
 
-This section gives details of the problem that is to be solved.
+This section explains the problem that is to be solved. First and
+foremost, the different kinds of relation need to be accounted for in
+the controller.
 
 #### Hard vs soft dependence
 
@@ -43,41 +44,46 @@ In some cases, it's expedient if the dependency is met before the
 dependent needs it, but it will work eventually. For example, if
 service A needs to connect to service B in the course of serving
 requests, it won't be available until service B is available -- but it
-is OK if service B starts after service A.
+is OK if service B starts after service A, or can reach a ready state
+after service A.
 
 This is soft dependence.
 
 TODO why does this distinction matter? (A: at least because soft
 dependence can be broken if necessary to satisfy hard dependence)
 
-#### The kinds of dependence
+#### Transitions rely on states
 
-Key: `dependency <-- dependent`
+A dependence is always in the form of a _transition_ relying on a
+_state_; for example, service A cannot become available without
+service B being available. In other words, it says what the controller
+needs to observe about the dependency before it acts (usually by
+applying an update).
 
-There are different kinds of dependency relation, and they require
-different approaches.
+Key: `state of dependency <-- transition for dependent`
 
- * **Definition <-- Availability**
+ * **Defined <-- Available**
 
 The dependent needs the dependency to have been defined (created)
 before it can run. For example, a Deployment that mounts a ConfigMap.
 
 In most situations, retries will sort this out, but the happy path is
-to apply the dependency before the dependent.
+to wait for the dependency to exist before applying the dependent.
 
- * **Availability <-- Availability**
+ * **Available <-- Available**
 
-The dependent needs the dependency to be available for it to
-function. For example, my web service needs the database to be
-available to be able to serve records.
+The dependent needs the dependency to be _available_ for it to reach
+an available state itself. For example, my web service needs the
+database to be available to be able to serve records.
 
-This implies that the dependency will be defined _at some point_,
-which can be checked statically. Otherwise, the main concern is that
-the dependency is applied first so it has a chance to reach a ready
-state before the dependent (which might otherwise be delayed by
-restarts).
+The efficient, happy path is that the dependency reaches a ready state
+before the dependent needs it (which might otherwise be delayed by
+restarts). This is a soft dependence, so a best effort is fine. In
+practice this may mean either waiting to make sure the dependency
+exists before applying the dependent, or it may mean going ahead in
+the expectation that it will appear at some point.
 
- * **Completion <-- Definition**
+ * **Completed <-- Defined**
 
 The dependent needs the dependency to have reached a certain point, to
 have enough information to be defined itself. For example, a webhook
@@ -88,11 +94,12 @@ Note that the completion may be something other than a process exiting
 -- it could be an object that gets created or updated as part of a
 service starting up.
 
-This is a harder relation than Availability <-- Availability, since it
+This is a harder relation than `Available <-- Available`, since it
 means applying the dependent _must_ be delayed until the condition is
-met.
+met. It's also important to note that completion is a one-way gate --
+once it is reached, the dependency is fulfilled.
 
- * **Availability <-- Definition**
+ * **Available <-- Defined**
 
 The dependent needs the dependency to be running for it to be created
 correctly. For example, a web service needs the service mesh webhook
@@ -124,8 +131,8 @@ defers the sync if they are not met.
    say over how it's provided; so all you can do is say what you need
  - the glue is at "link" time, when you demonstrate that all the
    dependent's needs are met by something (in principle). For Starling
-   that means when you define a Sync you say how the requirements are
-   met.
+   that could mean when you define a Sync you say how the requirements
+   are met (or it might just play out at runtime).
  - for a given configuration you should be able to tell whether all
    requirements are met
 
@@ -146,23 +153,49 @@ other machinery. On the other hand, it does mean more work from the
 user to figure out the names of things from elsewhere to depend on --
 and to keep the references accurate.
 
-Precision is important, because often it is a very particular resource
-that is required, and the dependence _should break_ if it is no longer
-present. With a less precise mechanism, it might be possible for the
-system to press on in an incorrect state, because the aggregate status
-is still calculated as ready.
-
-Sometimes you might just want an overall ready signal from another
-package. To depend on an aggregate status, it should be possible --
-perhaps in the near future if not now -- to use an object that
-represents the aggregation (the [Application CRD][application-crd] is
-one candidate).
-
 Depending on other Syncs (or the sources of them) is less precise, and
 needs a notion of sync-readiness or aggregate status to be invented or
 co-opted into the sync controller.
 
+Precision is important, because it is always a particular object that
+is required, and the _relation must break_ if the object is no longer
+present. With a less precise mechanism, it might be possible for the
+system to press on in an incorrect state, because the aggregate status
+is still calculated as ready.
+
+It may also be the case that the dependency is _not_ provided by
+another Sync, but is present in the cluster by some other means
+(perhaps because it's a reflection of some external system).
+
+Occasionally you might want just an overall ready signal from another
+package, perhaps as an approximation to depending on several of the
+objects within. To depend on an aggregate status, it should be
+possible -- perhaps in the near future if not now -- to use an object
+that represents the aggregation (the [Application
+CRD][application-crd] is one candidate).
+
+You might also want to refer to an object from another Sync without
+knowing the object's runtime name -- for this purpose, in the future
+there could be a name resolution process.
+
 [application-crd]: https://github.com/kubernetes-sigs/application
+
+On the other hand:
+
+Packages are supposed to be self-contained, so if there are exact
+dependencies, there has probably been a design mistake. Depending on
+individual objects breaks the encapsulation of a package: if something
+depends on a particular object, and it changes name, the relation will
+break needlessly.
+
+It is also simpler to have versioned dependencies if you are dealing
+with Syncs, since they have the revision recorded whereas ordinary
+objects won't, in general.
+
+If you have objects as dependencies, a similar argument can be made
+for objects as dependents; and that gets complicated to express, and
+fiddly to enforce. It might make the process more efficient though,
+since _some_ things would be able to proceed.
 
 ## Unresolved questions and future considerations
 
@@ -197,3 +230,8 @@ I think this demonstrates I'm thinking about versioning the wrong way.
 E.g, Sync A depends on Sync B depends on Sync C. Naively, none of them
 would get synced, but since the consequences may be spread through the
 log, it could be difficult to notice why.
+
+One solution might be to record the dependence path: if Sync A depends
+on Sync B, and Sync B depends on Sync C, then Sync A records that it's
+waiting on Sync B and C; if a Sync sees its own name in that list,
+there's a cycle.
