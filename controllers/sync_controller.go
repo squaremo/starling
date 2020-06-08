@@ -56,6 +56,8 @@ const transitoryErrorRetryDelay = 20 * time.Second
 const debug = 1
 const trace = 2
 
+const outputJSONPath = `jsonpath={range .items[*]}{.apiVersion} {.kind} {.metadata.name} {.metadata.namespace}{"\n"}{end}`
+
 // SyncReconciler reconciles a Sync object
 type SyncReconciler struct {
 	client.Client
@@ -164,7 +166,7 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		return ctrl.Result{}, nil
 	}
 
-	applyArgs := []string{"apply"}
+	applyArgs := []string{"apply", "-o", outputJSONPath}
 
 	if sync.Spec.Cluster != nil {
 		clusterName := types.NamespacedName{
@@ -195,8 +197,10 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		applyArgs = append(applyArgs, "-f", filepath.Join(sourcedir, path))
 	}
 
+	log.V(debug).Info("kubectl command", "args", applyArgs)
 	cmd := exec.CommandContext(ctx, "kubectl", applyArgs...)
-	out, err := cmd.CombinedOutput()
+	outBytes, err := cmd.CombinedOutput()
+	out := string(outBytes)
 
 	result := syncv1alpha1.ApplySuccess
 	if err != nil {
@@ -207,12 +211,35 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	// because it didn't apply things cleanly, and those are different
 	// kinds of problem here. For now, just log the result. Later,
 	// it'll go in the status.
-	log.Info("kubectl apply result", "exit-code", cmd.ProcessState.ExitCode(), "output", string(out))
+	log.Info("kubectl apply result", "exit-code", cmd.ProcessState.ExitCode(), "output", out)
 
 	sync.Status.LastApplyTime = &metav1.Time{Time: now}
 	sync.Status.LastApplyResult = result
 	sync.Status.LastApplySource = &sync.Spec.Source
 	sync.Status.ObservedGeneration = sync.Generation
+
+	if result == syncv1alpha1.ApplySuccess {
+		// parse output to get resources.
+		var resources []syncv1alpha1.ResourceStatus
+		outLines := strings.Split(out, "\n")
+		for _, line := range outLines {
+			if line == "" {
+				continue
+			}
+			parts := strings.Split(line, " ")
+			resources = append(resources, syncv1alpha1.ResourceStatus{
+				TypeMeta: &metav1.TypeMeta{
+					APIVersion: parts[0],
+					Kind:       parts[1],
+				},
+				Name:      parts[2],
+				Namespace: parts[3],
+			})
+		}
+		sync.Status.Resources = resources
+		sync.Status.LastResourceStatusTime = &metav1.Time{Time: now}
+	}
+
 	if err = r.Status().Update(ctx, &sync); err != nil {
 		return ctrl.Result{}, err
 	}

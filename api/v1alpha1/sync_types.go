@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	kstatus "sigs.k8s.io/kustomize/kstatus/status"
 )
 
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!  NOTE: json
@@ -92,6 +93,23 @@ const (
 	ApplyFail    ApplyResult = "fail"
 )
 
+// ResourceStatus gives the identity and summary status of a resource.
+type ResourceStatus struct {
+	// NB: this provides GroupVersionKind()
+	*metav1.TypeMeta `json:",inline"`
+	Namespace        string          `json:"namespace,omitempty"`
+	Name             string          `json:"name"`
+	Status           *kstatus.Status `json:"status,omitempty"`
+}
+
+func (r ResourceStatus) GetNamespace() string {
+	return r.Namespace
+}
+
+func (r ResourceStatus) GetName() string {
+	return r.Name
+}
+
 // SyncStatus defines the observed state of Sync
 type SyncStatus struct {
 	// LastApplySource records the source that was set last time a
@@ -109,7 +127,18 @@ type SyncStatus struct {
 	// can know whether it needs to react to a change, or simply
 	// update the status.
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// LastStatusTime records the last time the applied resources were
+	// successfully scanned for their status.
+	// +optional
+	LastResourceStatusTime *metav1.Time `json:"lastResourceStatusTime,omitempty"`
+	// Resources gives the identity and summary status of each
+	// resource applied by this sync.
+	// +optional
+	Resources []ResourceStatus `json:"resources,omitempty"`
 }
+
+// https://github.com/kubernetes-sigs/kustomize/blob/master/kstatus/wait/wait.go#L28
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
