@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -40,6 +41,8 @@ import (
 	kcfg "sigs.k8s.io/cluster-api/util/kubeconfig"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	kstatus "sigs.k8s.io/kustomize/kstatus/status"
+	kwait "sigs.k8s.io/kustomize/kstatus/wait"
 
 	syncv1alpha1 "github.com/fluxcd/starling/api/v1alpha1"
 )
@@ -63,6 +66,7 @@ type SyncReconciler struct {
 	client.Client
 	Log    logr.Logger
 	Scheme *runtime.Scheme
+	mapper meta.RESTMapper
 }
 
 // +kubebuilder:rbac:groups=sync.fluxcd.io,resources=syncs,verbs=get;list;watch;create;update;patch;delete
@@ -236,8 +240,23 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 				Namespace: parts[3],
 			})
 		}
-		sync.Status.Resources = resources
 		sync.Status.LastResourceStatusTime = &metav1.Time{Time: now}
+
+		ids := make([]kwait.KubernetesObject, len(resources), len(resources))
+		for i, resource := range resources {
+			ids[i] = resource
+		}
+
+		resolver := kwait.NewResolver(r, r.mapper, 0)
+		results := resolver.FetchAndResolveObjects(ctx, ids)
+		// TODO this ignores errors (they just result in 'Unknown'
+		// anyway)
+		for i, result := range results {
+			s := new(kstatus.Status)
+			*s = result.Result.Status
+			resources[i].Status = s
+		}
+		sync.Status.Resources = resources
 	}
 
 	if err = r.Status().Update(ctx, &sync); err != nil {
@@ -248,6 +267,8 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 }
 
 func (r *SyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// TODO I have no idea if this is what you are supposed to do
+	r.mapper = mgr.GetRESTMapper()
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&syncv1alpha1.Sync{}).
 		Complete(r)
