@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -40,6 +41,8 @@ import (
 	kcfg "sigs.k8s.io/cluster-api/util/kubeconfig"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	kstatus "sigs.k8s.io/kustomize/kstatus/status"
+	kwait "sigs.k8s.io/kustomize/kstatus/wait"
 
 	syncv1alpha1 "github.com/fluxcd/starling/api/v1alpha1"
 )
@@ -56,11 +59,24 @@ const transitoryErrorRetryDelay = 20 * time.Second
 const debug = 1
 const trace = 2
 
+// This puts an order on status values, which I can use to calculate a
+// _least_ status from a list of resources.
+var statusRanks = map[kstatus.Status]int{
+	kstatus.UnknownStatus:     0,
+	kstatus.FailedStatus:      1,
+	kstatus.TerminatingStatus: 2,
+	kstatus.InProgressStatus:  3,
+	kstatus.CurrentStatus:     4,
+}
+
+const outputJSONPath = `jsonpath={range .items[*]}{.apiVersion} {.kind} {.metadata.name} {.metadata.namespace}{"\n"}{end}`
+
 // SyncReconciler reconciles a Sync object
 type SyncReconciler struct {
 	client.Client
 	Log    logr.Logger
 	Scheme *runtime.Scheme
+	mapper meta.RESTMapper
 }
 
 // +kubebuilder:rbac:groups=sync.fluxcd.io,resources=syncs,verbs=get;list;watch;create;update;patch;delete
@@ -164,7 +180,7 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		return ctrl.Result{}, nil
 	}
 
-	applyArgs := []string{"apply"}
+	applyArgs := []string{"apply", "-o", outputJSONPath}
 
 	if sync.Spec.Cluster != nil {
 		clusterName := types.NamespacedName{
@@ -195,8 +211,10 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		applyArgs = append(applyArgs, "-f", filepath.Join(sourcedir, path))
 	}
 
+	log.V(debug).Info("kubectl command", "args", applyArgs)
 	cmd := exec.CommandContext(ctx, "kubectl", applyArgs...)
-	out, err := cmd.CombinedOutput()
+	outBytes, err := cmd.CombinedOutput()
+	out := string(outBytes)
 
 	result := syncv1alpha1.ApplySuccess
 	if err != nil {
@@ -207,12 +225,55 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	// because it didn't apply things cleanly, and those are different
 	// kinds of problem here. For now, just log the result. Later,
 	// it'll go in the status.
-	log.Info("kubectl apply result", "exit-code", cmd.ProcessState.ExitCode(), "output", string(out))
+	log.Info("kubectl apply result", "exit-code", cmd.ProcessState.ExitCode(), "output", out)
 
 	sync.Status.LastApplyTime = &metav1.Time{Time: now}
 	sync.Status.LastApplyResult = result
 	sync.Status.LastApplySource = &sync.Spec.Source
 	sync.Status.ObservedGeneration = sync.Generation
+
+	if result == syncv1alpha1.ApplySuccess {
+		// parse output to get resources.
+		var resources []syncv1alpha1.ResourceStatus
+		outLines := strings.Split(out, "\n")
+		for _, line := range outLines {
+			if line == "" {
+				continue
+			}
+			parts := strings.Split(line, " ")
+			resources = append(resources, syncv1alpha1.ResourceStatus{
+				TypeMeta: &metav1.TypeMeta{
+					APIVersion: parts[0],
+					Kind:       parts[1],
+				},
+				Name:      parts[2],
+				Namespace: parts[3],
+			})
+		}
+
+		ids := make([]kwait.KubernetesObject, len(resources), len(resources))
+		for i, resource := range resources {
+			ids[i] = resource
+		}
+
+		resolver := kwait.NewResolver(r, r.mapper, 0)
+		results := resolver.FetchAndResolveObjects(ctx, ids)
+		// TODO this ignores errors (they just result in 'Unknown'
+		// anyway)
+		leastStatus := kstatus.CurrentStatus
+		for i, result := range results {
+			s := new(kstatus.Status)
+			*s = result.Result.Status
+			if statusRanks[result.Result.Status] < statusRanks[leastStatus] {
+				leastStatus = result.Result.Status
+			}
+			resources[i].Status = s
+		}
+		sync.Status.LastResourceStatusTime = &metav1.Time{Time: now}
+		sync.Status.Resources = resources
+		sync.Status.ResourcesLeastStatus = &leastStatus
+	}
+
 	if err = r.Status().Update(ctx, &sync); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -221,6 +282,8 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 }
 
 func (r *SyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// TODO I have no idea if this is what you are supposed to do
+	r.mapper = mgr.GetRESTMapper()
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&syncv1alpha1.Sync{}).
 		Complete(r)

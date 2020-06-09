@@ -18,6 +18,9 @@ spec:
   - JSONPath: .status.lastApplyTime
     name: Last applied
     type: string
+  - JSONPath: .status.resourcesLeastStatus
+    name: Resource status
+    type: string
   group: sync.fluxcd.io
   names:
     kind: Sync
@@ -120,12 +123,52 @@ spec:
               description: LastAppliedTime records the last time a sync was attempted
               format: date-time
               type: string
+            lastResourceStatusTime:
+              description: LastStatusTime records the last time the applied resources
+                were successfully scanned for their status.
+              format: date-time
+              type: string
             observedGeneration:
               description: ObservedGeneration (from metadata.generation) is the generation
                 last observed by the controller. This is used so the controller can
                 know whether it needs to react to a change, or simply update the status.
               format: int64
               type: integer
+            resources:
+              description: Resources gives the identity and summary status of each
+                resource applied by this sync.
+              items:
+                description: ResourceStatus gives the identity and summary status
+                  of a resource.
+                properties:
+                  apiVersion:
+                    description: 'APIVersion defines the versioned schema of this
+                      representation of an object. Servers should convert recognized
+                      schemas to the latest internal value, and may reject unrecognized
+                      values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+                    type: string
+                  kind:
+                    description: 'Kind is a string value representing the REST resource
+                      this object represents. Servers may infer this from the endpoint
+                      the client submits requests to. Cannot be updated. In CamelCase.
+                      More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+                    type: string
+                  name:
+                    type: string
+                  namespace:
+                    type: string
+                  status:
+                    description: Status defines the set of statuses a resource can
+                      have.
+                    type: string
+                required:
+                - name
+                type: object
+              type: array
+            resourcesLeastStatus:
+              description: ResourcesLeastStatus gives an aggreate status for the resources
+                synced, by using the _least_ ready of the individual statuses.
+              type: string
           type: object
       type: object
   version: v1alpha1

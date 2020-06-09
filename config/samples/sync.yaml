@@ -3,9 +3,10 @@ kind: Sync
 metadata:
   name: sync
 spec:
-  url: "https://github.com/squaremo/flux-example/archive/master.zip"
-  # url: "http://source-controller.system/gitrepository/default/source/latest.tar.gz"
-  paths:
-  - flux-example-master/config/ollehworld
+  source:
+    url: "https://github.com/squaremo/flux-example/archive/master.zip"
+    # url: "http://source-controller.system/gitrepository/default/source/latest.tar.gz"
+    paths:
+    - flux-example-master/config/ollehworld
   # - config/ollehworld
   interval: 2m

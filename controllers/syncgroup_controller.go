@@ -239,10 +239,12 @@ func (r *SyncGroupReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 }
 
 func (r *SyncGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	ctx := context.Background()
+
 	// This sets up an index on the owner (a SyncGroup) of Sync
 	// objects. This is so we can list them easily when it comes to
 	// reconcile a SyncGroup.
-	if err := mgr.GetFieldIndexer().IndexField(&syncv1alpha1.Sync{}, syncOwnerKey, func(obj runtime.Object) []string {
+	if err := mgr.GetFieldIndexer().IndexField(ctx, &syncv1alpha1.Sync{}, syncOwnerKey, func(obj runtime.Object) []string {
 		sync := obj.(*syncv1alpha1.Sync)
 		owner := metav1.GetControllerOf(sync)
 		if owner == nil {
@@ -258,7 +260,7 @@ func (r *SyncGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 
 	// Index the git repository object that a SyncGroup refers to, if any
-	if err := mgr.GetFieldIndexer().IndexField(&syncv1alpha1.SyncGroup{}, sourceRefKey, func(obj runtime.Object) []string {
+	if err := mgr.GetFieldIndexer().IndexField(ctx, &syncv1alpha1.SyncGroup{}, sourceRefKey, func(obj runtime.Object) []string {
 		syncgroup := obj.(*syncv1alpha1.SyncGroup)
 		if ref := syncgroup.Spec.Source.GitRepository; ref != nil {
 			return []string{ref.Name}
