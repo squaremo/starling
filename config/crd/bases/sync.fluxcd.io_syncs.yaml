@@ -18,6 +18,9 @@ spec:
   - JSONPath: .status.lastApplyTime
     name: Last applied
     type: string
+  - JSONPath: .status.resourcesLeastStatus
+    name: Resource status
+    type: string
   group: sync.fluxcd.io
   names:
     kind: Sync
@@ -162,6 +165,10 @@ spec:
                 - name
                 type: object
               type: array
+            resourcesLeastStatus:
+              description: ResourcesLeastStatus gives an aggreate status for the resources
+                synced, by using the _least_ ready of the individual statuses.
+              type: string
           type: object
       type: object
   version: v1alpha1

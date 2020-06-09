@@ -136,6 +136,10 @@ type SyncStatus struct {
 	// resource applied by this sync.
 	// +optional
 	Resources []ResourceStatus `json:"resources,omitempty"`
+	// ResourcesLeastStatus gives an aggreate status for the resources
+	// synced, by using the _least_ ready of the individual statuses.
+	// +optional
+	ResourcesLeastStatus *kstatus.Status `json:"resourcesLeastStatus,omitempty"`
 }
 
 // https://github.com/kubernetes-sigs/kustomize/blob/master/kstatus/wait/wait.go#L28
@@ -145,6 +149,7 @@ type SyncStatus struct {
 // +kubebuilder:printcolumn:name="Revision",type=string,JSONPath=`.status.lastApplySource.revision`
 // +kubebuilder:printcolumn:name="Last result",type=string,JSONPath=`.status.lastApplyResult`
 // +kubebuilder:printcolumn:name="Last applied",type=string,JSONPath=`.status.lastApplyTime`
+// +kubebuilder:printcolumn:name="Resources status",type=string,JSONPath=`.status.resourcesLeastStatus`
 
 // Sync is the Schema for the syncs API
 type Sync struct {

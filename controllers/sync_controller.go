@@ -59,6 +59,16 @@ const transitoryErrorRetryDelay = 20 * time.Second
 const debug = 1
 const trace = 2
 
+// This puts an order on status values, which I can use to calculate a
+// _least_ status from a list of resources.
+var statusRanks = map[kstatus.Status]int{
+	kstatus.UnknownStatus:     0,
+	kstatus.FailedStatus:      1,
+	kstatus.TerminatingStatus: 2,
+	kstatus.InProgressStatus:  3,
+	kstatus.CurrentStatus:     4,
+}
+
 const outputJSONPath = `jsonpath={range .items[*]}{.apiVersion} {.kind} {.metadata.name} {.metadata.namespace}{"\n"}{end}`
 
 // SyncReconciler reconciles a Sync object
@@ -240,7 +250,6 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 				Namespace: parts[3],
 			})
 		}
-		sync.Status.LastResourceStatusTime = &metav1.Time{Time: now}
 
 		ids := make([]kwait.KubernetesObject, len(resources), len(resources))
 		for i, resource := range resources {
@@ -251,12 +260,18 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		results := resolver.FetchAndResolveObjects(ctx, ids)
 		// TODO this ignores errors (they just result in 'Unknown'
 		// anyway)
+		leastStatus := kstatus.CurrentStatus
 		for i, result := range results {
 			s := new(kstatus.Status)
 			*s = result.Result.Status
+			if statusRanks[result.Result.Status] < statusRanks[leastStatus] {
+				leastStatus = result.Result.Status
+			}
 			resources[i].Status = s
 		}
+		sync.Status.LastResourceStatusTime = &metav1.Time{Time: now}
 		sync.Status.Resources = resources
+		sync.Status.ResourcesLeastStatus = &leastStatus
 	}
 
 	if err = r.Status().Update(ctx, &sync); err != nil {
