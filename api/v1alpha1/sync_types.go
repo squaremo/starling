@@ -26,6 +26,14 @@ import (
 // tags are required.  Any new fields you add must have json tags for
 // the fields to be serialized.
 
+const (
+	// MissingStatus records the fact of an expected resource not
+	// being present in the cluster. This is not at present in the
+	// range for status reported by kstatus, but it is a case I want
+	// to distinguish here.
+	MissingStatus kstatus.Status = "Missing"
+)
+
 type SyncSource struct {
 	// URL is a url for downloading a zipfile or tarball of the
 	// package to sync
