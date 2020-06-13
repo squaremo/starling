@@ -72,7 +72,13 @@ var statusRanks = map[kstatus.Status]int{
 	kstatus.CurrentStatus:      5,
 }
 
-const outputJSONPath = `jsonpath={range .items[*]}{.apiVersion} {.kind} {.metadata.name} {.metadata.namespace}{"\n"}{end}`
+// kubectl commands return a List if there's more than one result, but
+// a single item if there's one result. This makes it infuriatingly
+// fiddly to get a uniform representation out with JSONPath. The
+// simplest thing seems to be to output both, and ignore `List`
+// entries when parsing.
+const itemJSONPath = `{.apiVersion} {.kind} {.metadata.name} {.metadata.namespace}{"\n"}`
+const outputJSONPath = `jsonpath=` + itemJSONPath + `{range .items[*]}` + itemJSONPath + `{end}`
 
 // SyncReconciler reconciles a Sync object
 type SyncReconciler struct {
@@ -257,6 +263,11 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 				continue
 			}
 			parts := strings.Split(line, " ")
+			// Ignore List, since that's just a wrapper. See the
+			// comment about the JSONPath format, at the top.
+			if parts[1] == "List" {
+				continue
+			}
 			resources = append(resources, syncv1alpha1.ResourceStatus{
 				TypeMeta: &metav1.TypeMeta{
 					APIVersion: parts[0],
