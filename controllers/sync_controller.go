@@ -55,6 +55,7 @@ import (
 
 const clusterUnreadyRetryDelay = 20 * time.Second
 const transitoryErrorRetryDelay = 20 * time.Second
+const dependenciesUnreadyRetryDelay = 20 * time.Second
 
 const statusInterval = 20 * time.Second
 
@@ -70,6 +71,11 @@ var statusRanks = map[kstatus.Status]int{
 	kstatus.TerminatingStatus:  3,
 	kstatus.InProgressStatus:   4,
 	kstatus.CurrentStatus:      5,
+}
+
+// returns true if a is (strictly) less ready than b.
+func lessReadyThan(a, b kstatus.Status) bool {
+	return statusRanks[a] < statusRanks[b]
 }
 
 // kubectl commands return a List if there's more than one result, but
@@ -151,6 +157,19 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 			log.V(debug).Info("cluster not ready", "cluster", clusterName)
 			return ctrl.Result{RequeueAfter: clusterUnreadyRetryDelay}, nil
 		}
+	}
+
+	// Check the dependencies of the sync; if they aren't ready, don't
+	// bother with the rest.
+	if pending, err := r.checkDependenciesReady(ctx, &sync); err != nil {
+		return ctrl.Result{}, err
+	} else if len(pending) > 0 {
+		log.Info("dependencies not ready", "pending", pending)
+		sync.Status.PendingDependencies = pending
+		if err := r.Status().Update(ctx, &sync); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: dependenciesUnreadyRetryDelay}, nil
 	}
 
 	// Attempt to fetch the URL of the package being synced. Many of
@@ -299,6 +318,30 @@ func (r *SyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 // ---
 
+// checkDependenciesReady looks at the dependencies of a Sync and sees
+// if they are ready (have reached the given status). If not, it
+// returns the list of dependencies not met yet.
+func (r *SyncReconciler) checkDependenciesReady(ctx context.Context, sync *syncv1alpha1.Sync) ([]syncv1alpha1.Dependency, error) {
+	deps := sync.Spec.Dependencies
+	var pending []syncv1alpha1.Dependency
+	for _, dep := range deps {
+		var s syncv1alpha1.Sync
+		if err := r.Get(ctx, types.NamespacedName{
+			Namespace: sync.GetNamespace(),
+			Name:      dep.Sync.Name,
+		}, &s); err != nil {
+			return nil, err
+		}
+		depStatus := s.Status.ResourcesLeastStatus
+		if depStatus == nil || lessReadyThan(*depStatus, dep.RequiredStatus) {
+			// TODO: this is where I'd append the transitive
+			// dependencies, so that cycles could be detected.
+			pending = append(pending, dep)
+		}
+	}
+	return pending, nil
+}
+
 func (r *SyncReconciler) updateResourcesStatus(ctx context.Context, sync *syncv1alpha1.Sync, now time.Time) {
 	resources := sync.Status.Resources
 	ids := make([]kwait.KubernetesObject, len(resources), len(resources))
@@ -323,7 +366,7 @@ func (r *SyncReconciler) updateResourcesStatus(ctx context.Context, sync *syncv1
 			*s = syncv1alpha1.MissingStatus
 		}
 
-		if statusRanks[result.Result.Status] < statusRanks[leastStatus] {
+		if lessReadyThan(*s, leastStatus) {
 			leastStatus = *s
 		}
 		resources[i].Status = s
