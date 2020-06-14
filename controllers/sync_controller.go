@@ -55,6 +55,9 @@ import (
 
 const clusterUnreadyRetryDelay = 20 * time.Second
 const transitoryErrorRetryDelay = 20 * time.Second
+const dependenciesUnreadyRetryDelay = 20 * time.Second
+
+const statusInterval = 20 * time.Second
 
 const debug = 1
 const trace = 2
@@ -62,14 +65,26 @@ const trace = 2
 // This puts an order on status values, which I can use to calculate a
 // _least_ status from a list of resources.
 var statusRanks = map[kstatus.Status]int{
-	kstatus.UnknownStatus:     0,
-	kstatus.FailedStatus:      1,
-	kstatus.TerminatingStatus: 2,
-	kstatus.InProgressStatus:  3,
-	kstatus.CurrentStatus:     4,
+	kstatus.UnknownStatus:      0,
+	syncv1alpha1.MissingStatus: 1,
+	kstatus.FailedStatus:       2,
+	kstatus.TerminatingStatus:  3,
+	kstatus.InProgressStatus:   4,
+	kstatus.CurrentStatus:      5,
 }
 
-const outputJSONPath = `jsonpath={range .items[*]}{.apiVersion} {.kind} {.metadata.name} {.metadata.namespace}{"\n"}{end}`
+// returns true if a is (strictly) less ready than b.
+func lessReadyThan(a, b kstatus.Status) bool {
+	return statusRanks[a] < statusRanks[b]
+}
+
+// kubectl commands return a List if there's more than one result, but
+// a single item if there's one result. This makes it infuriatingly
+// fiddly to get a uniform representation out with JSONPath. The
+// simplest thing seems to be to output both, and ignore `List`
+// entries when parsing.
+const itemJSONPath = `{.apiVersion} {.kind} {.metadata.name} {.metadata.namespace}{"\n"}`
+const outputJSONPath = `jsonpath=` + itemJSONPath + `{range .items[*]}` + itemJSONPath + `{end}`
 
 // SyncReconciler reconciles a Sync object
 type SyncReconciler struct {
@@ -98,9 +113,22 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	//  - the source has changed
 	now := time.Now().UTC()
 	if ok, when := needsApply(&sync, now); !ok {
+		// May still want to update the resource statuses; see if it's
+		// time to do that
+		if ok, whenStatus := needsStatus(&sync, now); ok {
+			r.updateResourcesStatus(ctx, &sync, now)
+			if err := r.Status().Update(ctx, &sync); err != nil {
+				return ctrl.Result{}, err
+			}
+		} else {
+			// reschedule for the earliest of when apply or status needs
+			// attention
+			if whenStatus < when {
+				when = whenStatus
+			}
+		}
 		return ctrl.Result{RequeueAfter: when}, nil
-		// otherwise let it run on to do the sync
-	}
+	} // otherwise let it run on to do the sync
 
 	// If the sync refers to a cluster, check that the cluster
 	// exists. If not, I can't do anything here.
@@ -129,6 +157,19 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 			log.V(debug).Info("cluster not ready", "cluster", clusterName)
 			return ctrl.Result{RequeueAfter: clusterUnreadyRetryDelay}, nil
 		}
+	}
+
+	// Check the dependencies of the sync; if they aren't ready, don't
+	// bother with the rest.
+	if pending, err := r.checkDependenciesReady(ctx, &sync); err != nil {
+		return ctrl.Result{}, err
+	} else if len(pending) > 0 {
+		log.Info("dependencies not ready", "pending", pending)
+		sync.Status.PendingDependencies = pending
+		if err := r.Status().Update(ctx, &sync); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: dependenciesUnreadyRetryDelay}, nil
 	}
 
 	// Attempt to fetch the URL of the package being synced. Many of
@@ -241,6 +282,11 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 				continue
 			}
 			parts := strings.Split(line, " ")
+			// Ignore List, since that's just a wrapper. See the
+			// comment about the JSONPath format, at the top.
+			if parts[1] == "List" {
+				continue
+			}
 			resources = append(resources, syncv1alpha1.ResourceStatus{
 				TypeMeta: &metav1.TypeMeta{
 					APIVersion: parts[0],
@@ -250,28 +296,9 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 				Namespace: parts[3],
 			})
 		}
-
-		ids := make([]kwait.KubernetesObject, len(resources), len(resources))
-		for i, resource := range resources {
-			ids[i] = resource
-		}
-
-		resolver := kwait.NewResolver(r, r.mapper, 0)
-		results := resolver.FetchAndResolveObjects(ctx, ids)
-		// TODO this ignores errors (they just result in 'Unknown'
-		// anyway)
-		leastStatus := kstatus.CurrentStatus
-		for i, result := range results {
-			s := new(kstatus.Status)
-			*s = result.Result.Status
-			if statusRanks[result.Result.Status] < statusRanks[leastStatus] {
-				leastStatus = result.Result.Status
-			}
-			resources[i].Status = s
-		}
-		sync.Status.LastResourceStatusTime = &metav1.Time{Time: now}
 		sync.Status.Resources = resources
-		sync.Status.ResourcesLeastStatus = &leastStatus
+
+		r.updateResourcesStatus(ctx, &sync, now)
 	}
 
 	if err = r.Status().Update(ctx, &sync); err != nil {
@@ -291,6 +318,74 @@ func (r *SyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 // ---
 
+// checkDependenciesReady looks at the dependencies of a Sync and sees
+// if they are ready (have reached the given status). If not, it
+// returns the list of dependencies not met yet.
+func (r *SyncReconciler) checkDependenciesReady(ctx context.Context, sync *syncv1alpha1.Sync) ([]syncv1alpha1.Dependency, error) {
+	deps := sync.Spec.Dependencies
+	var pending []syncv1alpha1.Dependency
+	for _, dep := range deps {
+		var s syncv1alpha1.Sync
+		if err := r.Get(ctx, types.NamespacedName{
+			Namespace: sync.GetNamespace(),
+			Name:      dep.Sync.Name,
+		}, &s); err != nil {
+			return nil, err
+		}
+		depStatus := s.Status.ResourcesLeastStatus
+		if depStatus == nil || lessReadyThan(*depStatus, dep.RequiredStatus) {
+			// TODO: this is where I'd append the transitive
+			// dependencies, so that cycles could be detected.
+			pending = append(pending, dep)
+		}
+	}
+	return pending, nil
+}
+
+func (r *SyncReconciler) updateResourcesStatus(ctx context.Context, sync *syncv1alpha1.Sync, now time.Time) {
+	resources := sync.Status.Resources
+	ids := make([]kwait.KubernetesObject, len(resources), len(resources))
+	for i, resource := range resources {
+		ids[i] = resource
+	}
+
+	resolver := kwait.NewResolver(r, r.mapper, 0)
+	results := resolver.FetchAndResolveObjects(ctx, ids)
+	// TODO this ignores errors (they just result in 'Unknown'
+	// anyway)
+	leastStatus := kstatus.CurrentStatus
+	for i, result := range results {
+		r.Log.V(1).Info("fetched status", "resource", result.ResourceIdentifier, "result", result.Result, "error", result.Error)
+		s := new(kstatus.Status)
+		*s = result.Result.Status
+		// https://github.com/kubernetes-sigs/kustomize/issues/2587
+		// kstatus does not distinguish between Current (up to date)
+		// and missing, other than in the (for humans) `Message`
+		// field. Hence this brittle test:
+		if result.Result.Message == "Resource does not exist" {
+			*s = syncv1alpha1.MissingStatus
+		}
+
+		if lessReadyThan(*s, leastStatus) {
+			leastStatus = *s
+		}
+		resources[i].Status = s
+	}
+	r.Log.V(debug).Info("fetched resources status", "resources", resources, "least", leastStatus)
+	sync.Status.LastResourceStatusTime = &metav1.Time{Time: now}
+	sync.Status.ResourcesLeastStatus = &leastStatus
+}
+
+// dueOrWhen says if period has passed, give or take a second, and if
+// not, when it will have passed.
+func dueOrWhen(period time.Duration, now, last time.Time) (bool, time.Duration) {
+	when := period - now.Sub(last)
+	if when < time.Second { // close enough to not bother requeueing
+		return true, 0
+	}
+	return false, when
+}
+
 // needsApply calculates whether a sync needs to run right now, and if
 // not, how long until it does.
 func needsApply(sync *syncv1alpha1.Sync, now time.Time) (bool, time.Duration) {
@@ -299,11 +394,16 @@ func needsApply(sync *syncv1alpha1.Sync, now time.Time) (bool, time.Duration) {
 		!(&sync.Spec.Source).Equiv(sync.Status.LastApplySource) {
 		return true, 0
 	}
-	when := sync.Spec.Interval.Duration - now.Sub(sync.Status.LastApplyTime.Time)
-	if when < time.Second { // close enough to not bother requeueing
+	return dueOrWhen(sync.Spec.Interval.Duration, now, sync.Status.LastApplyTime.Time)
+}
+
+// needsStatus calculates whether the resources for a sync should be
+// examined.
+func needsStatus(sync *syncv1alpha1.Sync, now time.Time) (bool, time.Duration) {
+	if sync.Status.LastResourceStatusTime == nil {
 		return true, 0
 	}
-	return false, when
+	return dueOrWhen(statusInterval, now, sync.Status.LastResourceStatusTime.Time)
 }
 
 // untargzip unpacks a gzipped-tarball. It uses a logger to report

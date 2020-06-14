@@ -19,7 +19,7 @@ spec:
     name: Last applied
     type: string
   - JSONPath: .status.resourcesLeastStatus
-    name: Resource status
+    name: Resources status
     type: string
   group: sync.fluxcd.io
   names:
@@ -58,6 +58,28 @@ spec:
                     TODO: Add other useful fields. apiVersion, kind, uid?'
                   type: string
               type: object
+            dependencies:
+              description: Dependencies gives a list of the dependency relations this
+                sync has. These must be satisfied for this sync to be applied.
+              items:
+                properties:
+                  requiredStatus:
+                    description: RequiredStatus is the status needed to be reported
+                      by the dependency before this sync can proceed.
+                    type: string
+                  sync:
+                    description: Sync is a pointer to another sync.
+                    properties:
+                      name:
+                        description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                          TODO: Add other useful fields. apiVersion, kind, uid?'
+                        type: string
+                    type: object
+                required:
+                - requiredStatus
+                - sync
+                type: object
+              type: array
             interval:
               description: Interval is the target period for reapplying the config
                 to the cluster. Syncs may be processed slower than this, depending
@@ -134,6 +156,29 @@ spec:
                 know whether it needs to react to a change, or simply update the status.
               format: int64
               type: integer
+            pendingDependencies:
+              description: PendingDependencies is a list of dependencies that are
+                not yet satisfied. Aside from being informative this lets the controller
+                see if there is a cycle.
+              items:
+                properties:
+                  requiredStatus:
+                    description: RequiredStatus is the status needed to be reported
+                      by the dependency before this sync can proceed.
+                    type: string
+                  sync:
+                    description: Sync is a pointer to another sync.
+                    properties:
+                      name:
+                        description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                          TODO: Add other useful fields. apiVersion, kind, uid?'
+                        type: string
+                    type: object
+                required:
+                - requiredStatus
+                - sync
+                type: object
+              type: array
             resources:
               description: Resources gives the identity and summary status of each
                 resource applied by this sync.

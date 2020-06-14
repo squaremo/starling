@@ -26,6 +26,14 @@ import (
 // tags are required.  Any new fields you add must have json tags for
 // the fields to be serialized.
 
+const (
+	// MissingStatus records the fact of an expected resource not
+	// being present in the cluster. This is not at present in the
+	// range for status reported by kstatus, but it is a case I want
+	// to distinguish here.
+	MissingStatus kstatus.Status = "Missing"
+)
+
 type SyncSource struct {
 	// URL is a url for downloading a zipfile or tarball of the
 	// package to sync
@@ -67,6 +75,16 @@ func (src1 *SyncSource) Equiv(src2 *SyncSource) bool {
 	return true
 }
 
+type Dependency struct {
+	// RequiredStatus is the status needed to be reported by the
+	// dependency before this sync can proceed.
+	// +required
+	RequiredStatus kstatus.Status `json:"requiredStatus"`
+	// Sync is a pointer to another sync.
+	// +required
+	Sync *corev1.LocalObjectReference `json:"sync"`
+}
+
 // SyncSpec defines the desired state of Sync
 type SyncSpec struct {
 	// Source is the location from which to get configuration to sync.
@@ -81,6 +99,9 @@ type SyncSpec struct {
 	// Cluster is a reference to the cluster to apply definitions to
 	// +optional
 	Cluster *corev1.LocalObjectReference `json:"cluster,omitempty"`
+	// Dependencies gives a list of the dependency relations this sync
+	// has. These must be satisfied for this sync to be applied.
+	Dependencies []Dependency `json:"dependencies,omitempty"`
 }
 
 // ApplyResult is a type for recording the outcome of an attempted
@@ -140,6 +161,10 @@ type SyncStatus struct {
 	// synced, by using the _least_ ready of the individual statuses.
 	// +optional
 	ResourcesLeastStatus *kstatus.Status `json:"resourcesLeastStatus,omitempty"`
+	// PendingDependencies is a list of dependencies that are not yet
+	// satisfied. Aside from being informative this lets the
+	// controller see if there is a cycle.
+	PendingDependencies []Dependency `json:"pendingDependencies,omitempty"`
 }
 
 // https://github.com/kubernetes-sigs/kustomize/blob/master/kstatus/wait/wait.go#L28
