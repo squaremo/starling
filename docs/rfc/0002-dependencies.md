@@ -171,9 +171,12 @@ of a ready state.
 ### The dependence mechanism
 
 The basic idea of dependence-sensitive syncing is that a Sync object
-declares its depedencies, and how they are met. Before the sync
+declares its dependencies, and how they are met. Before the sync
 controller applies configuration, it checks the requirements, and
 defers the sync if they are not met.
+
+In aggregate, this results in syncs being applied in dependency-first
+order.
 
 #### Declaring dependence
 
@@ -249,6 +252,39 @@ If you have objects as dependencies, a similar argument can be made
 for objects as dependents; and that gets complicated to express, and
 fiddly to enforce. It might make the process more efficient though,
 since _some_ things would be able to proceed.
+
+**Serialising syncs, then applying in order**
+
+This design shuffles dependents toward the back by deferring anything
+that has not had its dependencies met. An alternative would be to
+serialise Sync objects according to dependence, and apply in that
+order.
+
+In the base case of nothing having been applied to a cluster, you
+might start by serialising all Sync objects targetting the cluster --
+triggered, say, by any Sync for the cluster arriving at the head of
+the queue. You would need to wait for each object to reach the desired
+state (or fail to do so by a given timeout) before proceeding to the
+next (or failing).
+
+This is tricky to fit to the reconciler model -- you would need to
+lock the targetted cluster somehow, so that no other syncs were
+attempted on it. And it ties up a goroutine, waiting for each of the
+syncs to complete. In principle, you could parallelise syncing when
+there are multiple paths through the dependency graph, with more
+goroutines and synchronisation.
+
+To recover concurrency without introducing locking, goroutines and
+synchronisation, you could work in sympathy with the reconciler model
+by queueing the dependencies to be synced. Once they have been
+applied, you can come back and attempt the dependent sync.
+
+Since any given dependency might take a while to reach the required
+state, you might need to put off the dependent sync for
+longer. Requeueing a sync after its dependencies also implicitly sorts
+them, too, so no need to do that up front.
+
+You have now arrived back at the design given in this RFC.
 
 ## Unresolved questions and future considerations
 
