@@ -1,11 +1,16 @@
-# A mechansim for being sensitive to dependence
+# A mechansim for making syncs sensitive to dependence
 
 ## Summary
 
 This RFC presents an extension to the syncing machinery to account for
-relations between Syncs, in which one Sync depend on another.
+relations between Syncs in which one Sync depends on others.
 
-TODO give outline of design here too
+The initial design is this:
+
+ - a Sync object can declare dependencies, which name another Sync and
+   give a required status for it;
+ - when a Sync is reconciled, if its dependencies do not have their
+   required statuses, its application will be deferred.
 
 ## Motivation
 
@@ -33,13 +38,18 @@ the controller.
 
 #### Scenarios where dependence is a useful mechanism
 
-**[DEFINITION] I need the custom resource definitions to have been
-applied before I can create my custom resources**
+**[COMPLETION] I need the custom resource definitions to have been
+created before I can create my custom resources**
 
 This is a direct tail-to-head dependence; the resources cannot be
 defined until the Kubernetes API server knows about their
 types. Retries will probably be enough to get things working
 eventually.
+
+The more general case is that the dependency must have finished
+running before the dependent can be applied; for example, the
+dependency is a job that creates certificates for use by the
+dependent.
 
 **[AVAILABILITY] My app will start more quickly and smoothly if
 `service A` is up and running before `service B` is started**
@@ -52,8 +62,9 @@ Note there is usually a similar relation when _updating_ parts of the
 app; updating `service B` is going to restart it, so it's best if
 `service A` is known to be running when that happens.
 
-**[GLOBAL] I need to make sure Istio mutating webhook is registered and running
-before any pods are created, so it can give them all sidecars**
+**[GLOBAL] I need to make sure Istio mutating webhook is registered
+and running before any pods are created, so it can give them all
+sidecars**
 
 Istio works by adding a sidecar proxy to each pod to connect it to the
 mesh. In this case, a missing dependency would mean incorrect
@@ -84,121 +95,55 @@ it just for my use**
 This is a requirement of the environment, rather than a direct
 dependence on another component.
 
-#### Hard vs soft dependence
-
-In some cases the dependency is required for correct operation. For
-example, if a Deployment uses a secret for environment variables, the
-secret must exist before the pods started by the deployment can run.
-
-This is hard dependence.
-
-In some cases, it's expedient if the dependency is met before the
-dependent needs it, but it will work eventually. For example, if
-service A needs to connect to service B in the course of serving
-requests, it won't be available until service B is available -- but it
-is OK if service B starts after service A, or can reach a ready state
-after service A.
-
-This is soft dependence.
-
-Why does this distinction matter? At least because soft dependence can
-be broken if necessary to satisfy hard dependence.
-
-#### Transitions rely on states
-
-A dependence is always in the form of a _transition_ relying on a
-_state_; for example, service A cannot become available without
-service B being available. In other words, it says what the controller
-needs to observe about the dependency before it acts (usually by
-applying an update).
-
-Key: `state of dependency <-- transition for dependent`
-
- * **Defined <-- Available**
-
-The dependent needs the dependency to have been defined (created)
-before it can run itself. For example, a Deployment that mounts a
-ConfigMap.
-
-In most situations, retries will sort this out, but the happy path is
-to wait for the dependency to exist before applying the dependent.
-
- * **Available <-- Available**
-
-The dependent needs the dependency to be _available_ for it to reach
-an available state itself. For example, my web service needs the
-database to be available to be able to serve records.
-
-The efficient, happy path is that the dependency reaches a ready state
-before the dependent needs it (which might otherwise be delayed by
-restarts). This is a soft dependence, so a best effort is fine. In
-practice this may mean either waiting to make sure the dependency
-exists before applying the dependent, or it may mean going ahead in
-the expectation that it will appear at some point.
-
- * **Completed <-- Defined**
-
-The dependent needs the dependency to have reached a certain point, to
-have enough information to be defined itself. For example, a webhook
-needs certificates to be created and signed, which it can then use to
-run.
-
-Note that the completion may be something other than a process exiting
--- it could be an object that gets created or updated as part of a
-service starting up.
-
-This is a harder relation than `Available <-- Available`, since it
-means applying the dependent _must_ be delayed until the condition is
-met. It's also important to note that completion is a one-way gate --
-once it is reached, the dependency is fulfilled.
-
- * **Available <-- Defined**
-
-The dependent needs the dependency to be running for it to be created
-correctly. For example, a web service needs the service mesh webhook
-to be running when the service is created, for its pods to be
-connected to the mesh.
-
-This is not a desirable situation! But sometimes it is hard to
-avoid. A mitigation is to arrange for the dependent to fail at
-creation time if the dependency is unavailable (and be retried); at
-least in that case, it won't end up in an incorrect state.
-
-This is a hard dependency relation, but there can only be a best
-effort mechanism for meeting it -- the dependency can transition out
-of a ready state.
-
 ### The dependence mechanism
 
 The basic idea of dependence-sensitive syncing is that a Sync object
-declares its dependencies, and how they are met. Before the sync
+declares its dependencies, and their required status. Before the sync
 controller applies configuration, it checks the requirements, and
-defers the sync if they are not met.
+defers the sync if they are not met. In aggregate, this results in
+syncs being applied in dependency-first order.
 
-In aggregate, this results in syncs being applied in dependency-first
-order.
+This addresses the relations [AVAILABILITY] and [COMPLETION] above;
+the other kinds of relation need mechanisms that operate on a
+different level to Sync objects, and may be covered in later designs.
+
+There are two pieces of information needed to evaluate whether a Sync
+object's dependences are ready: a statement of the dependency
+requirements, and the aggregate status of each of the dependencies.
 
 #### Declaring dependence
 
- - there are two roles in play: the dependent, and the dependency
- - as a dependency you don't know that you'll be dependended upon, so
-   not much point wiring things up there
- - as a dependent, you know what you'll need, but you don't have any
-   say over how it's provided; so all you can do is say what you need
- - the glue is at "link" time, when you demonstrate that all the
-   dependent's needs are met by something (in principle). For Starling
-   that could mean when you define a Sync you say how the requirements
-   are met (or it might just play out at runtime).
- - for a given configuration you should be able to tell whether all
-   requirements are met
+The statement of the dependencies naturally lives with the dependent,
+and consists of the name of the dependency and its minimum required
+status.
+
+#### Aggregate status
+
+A dependence is evaluated using the aggregate status of a Sync. The
+aggregate status is the _least ready_ status of the individual
+objects.
+
+"Least ready" needs some explanation. Roughly, the interesting
+statuses for the relations detailed above are "doesn't exist",
+"exists", and "available". The statuses reported by Kubernetes don't
+reflect these neat categories (and for some types aren't given at
+all). The [kstatus library][kstatus] at least gives every object a
+status from a small set of possibilities, which can be mapped to those
+of interest, and given an order (so that, e.g., a status of `Current`
+satisfies a requirement of "exists").
+
+If part of a sync is not ready, then the whole thing should not be
+considered ready. Thus, the aggregate status is the least of all the
+individual statuses.
+
+[kstatus]: https://github.com/kubernetes-sigs/kustomize/tree/master/kstatus
 
 ## Backward compatibility
 
- - a major concern is how to retrofit dependencies to existing chunks
-   of configuration
-   - some of the time, the dependencies are just for the happy path;
-     so doing without is OK
-   - otherwise, it can be gradual
+Without dependencies delcared, the mechanism will just be bypassed.
+
+Retrofitting dependence to syncs after the fact can be done
+gradually.
 
 ## Alternative designs and anticipated questions
 
@@ -252,6 +197,9 @@ If you have objects as dependencies, a similar argument can be made
 for objects as dependents; and that gets complicated to express, and
 fiddly to enforce. It might make the process more efficient though,
 since _some_ things would be able to proceed.
+
+On balance, it seems reasonable to begin with dependence on aggregate
+status (by naming a sync), and build precise mechanisms afterwards.
 
 **Serialising syncs, then applying in order**
 
