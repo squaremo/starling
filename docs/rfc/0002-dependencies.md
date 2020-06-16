@@ -3,8 +3,7 @@
 ## Summary
 
 This RFC presents an extension to the syncing machinery to account for
-relations between Syncs in which one Sync depend on another in
-some way.
+relations between Syncs, in which one Sync depend on another.
 
 TODO give outline of design here too
 
@@ -32,6 +31,59 @@ This section explains the problem that is to be solved. First and
 foremost, the different kinds of relation need to be accounted for in
 the controller.
 
+#### Scenarios where dependence is a useful mechanism
+
+**[DEFINITION] I need the custom resource definitions to have been
+applied before I can create my custom resources**
+
+This is a direct tail-to-head dependence; the resources cannot be
+defined until the Kubernetes API server knows about their
+types. Retries will probably be enough to get things working
+eventually.
+
+**[AVAILABILITY] My app will start more quickly and smoothly if
+`service A` is up and running before `service B` is started**
+
+This is a statement of the "happy path" -- things will work more
+efficiently if done in a particular order. Restarts, and a modicum of
+care taken with the app code, will sort this out eventually.
+
+Note there is usually a similar relation when _updating_ parts of the
+app; updating `service B` is going to restart it, so it's best if
+`service A` is known to be running when that happens.
+
+**[GLOBAL] I need to make sure Istio mutating webhook is registered and running
+before any pods are created, so it can give them all sidecars**
+
+Istio works by adding a sidecar proxy to each pod to connect it to the
+mesh. In this case, a missing dependency would mean incorrect
+operation -- pods would not have the sidecar, and not be connected to
+the mesh.
+
+One differentiating property of this scenario is that the dependence
+is imposed on all other syncs -- "before _any_ pods" -- which suggests
+it needs to be outside any individual Sync declaration.
+
+**[VERSION] I need to update the database for my app before I can
+update the web service**
+
+In this scenario, the dependency is of the web service _version_ on a
+particular version of the database. This is different to just needing
+the database to be up and running -- it may cause hard to remedy
+problems, or at least an outage, if they are updated in the wrong
+order.
+
+Usually you would rely on either being clever in the app code -- a
+backward compatible web service -- or out-of-band coordination (e.g.,
+a human) to make things happen in the right order.
+
+**[ENVIRONMENT] I need Tekton to be running in the cluster for my
+pipeline resources to be useful, but I can't or don't want to install
+it just for my use**
+
+This is a requirement of the environment, rather than a direct
+dependence on another component.
+
 #### Hard vs soft dependence
 
 In some cases the dependency is required for correct operation. For
@@ -49,8 +101,8 @@ after service A.
 
 This is soft dependence.
 
-TODO why does this distinction matter? (A: at least because soft
-dependence can be broken if necessary to satisfy hard dependence)
+Why does this distinction matter? At least because soft dependence can
+be broken if necessary to satisfy hard dependence.
 
 #### Transitions rely on states
 
@@ -65,7 +117,8 @@ Key: `state of dependency <-- transition for dependent`
  * **Defined <-- Available**
 
 The dependent needs the dependency to have been defined (created)
-before it can run. For example, a Deployment that mounts a ConfigMap.
+before it can run itself. For example, a Deployment that mounts a
+ConfigMap.
 
 In most situations, retries will sort this out, but the happy path is
 to wait for the dependency to exist before applying the dependent.
