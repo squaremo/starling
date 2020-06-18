@@ -1,4 +1,4 @@
-# A mechansim for making syncs sensitive to dependence
+# A mechanism for dependence between syncs
 
 ## Summary
 
