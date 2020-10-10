@@ -25,6 +25,26 @@ rules:
 - apiGroups:
   - sync.fluxcd.io
   resources:
+  - remotesyncs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - sync.fluxcd.io
+  resources:
+  - remotesyncs/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - sync.fluxcd.io
+  resources:
   - syncgroups
   verbs:
   - create

@@ -96,9 +96,6 @@ type SyncSpec struct {
 	// updated.
 	// +required
 	Interval metav1.Duration `json:"interval"`
-	// Cluster is a reference to the cluster to apply definitions to
-	// +optional
-	Cluster *corev1.LocalObjectReference `json:"cluster,omitempty"`
 	// Dependencies gives a list of the dependency relations this sync
 	// has. These must be satisfied for this sync to be applied.
 	Dependencies []Dependency `json:"dependencies,omitempty"`

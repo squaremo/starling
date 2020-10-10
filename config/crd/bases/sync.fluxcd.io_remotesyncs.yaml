@@ -6,33 +6,18 @@ metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.2.5
   creationTimestamp: null
-  name: syncs.sync.fluxcd.io
+  name: remotesyncs.sync.fluxcd.io
 spec:
-  additionalPrinterColumns:
-  - JSONPath: .status.lastApplySource.revision
-    name: Revision
-    type: string
-  - JSONPath: .status.lastApplyResult
-    name: Last result
-    type: string
-  - JSONPath: .status.lastApplyTime
-    name: Last applied
-    type: string
-  - JSONPath: .status.resourcesLeastStatus
-    name: Resources status
-    type: string
   group: sync.fluxcd.io
   names:
-    kind: Sync
-    listKind: SyncList
-    plural: syncs
-    singular: sync
+    kind: RemoteSync
+    listKind: RemoteSyncList
+    plural: remotesyncs
+    singular: remotesync
   scope: Namespaced
-  subresources:
-    status: {}
   validation:
     openAPIV3Schema:
-      description: Sync is the Schema for the syncs API
+      description: RemoteSync is the Schema for the remotesyncs API
       properties:
         apiVersion:
           description: 'APIVersion defines the versioned schema of this representation
@@ -47,8 +32,17 @@ spec:
         metadata:
           type: object
         spec:
-          description: SyncSpec defines the desired state of Sync
+          description: RemoteSyncSpec defines the desired state of RemoteSync
           properties:
+            clusterRef:
+              description: ClusterRef is a reference to the cluster to apply definitions
+                to
+              properties:
+                name:
+                  description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    TODO: Add other useful fields. apiVersion, kind, uid?'
+                  type: string
+              type: object
             dependencies:
               description: Dependencies gives a list of the dependency relations this
                 sync has. These must be satisfied for this sync to be applied.
@@ -104,7 +98,7 @@ spec:
           - source
           type: object
         status:
-          description: SyncStatus defines the observed state of Sync
+          description: RemoteSyncStatus defines the observed state of RemoteSync
           properties:
             lastApplyResult:
               description: LastApplyResult records the outcome of the last sync attempt

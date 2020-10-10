@@ -30,7 +30,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	syncfluxcdiov1alpha1 "github.com/fluxcd/starling/api/v1alpha1"
+	syncv1alpha1 "github.com/fluxcd/starling/api/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -62,10 +62,7 @@ var _ = BeforeSuite(func(done Done) {
 	Expect(err).ToNot(HaveOccurred())
 	Expect(cfg).ToNot(BeNil())
 
-	err = syncfluxcdiov1alpha1.AddToScheme(scheme.Scheme)
-	Expect(err).NotTo(HaveOccurred())
-
-	err = syncfluxcdiov1alpha1.AddToScheme(scheme.Scheme)
+	err = syncv1alpha1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 
 	// +kubebuilder:scaffold:scheme

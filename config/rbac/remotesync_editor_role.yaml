@@ -1,0 +1,24 @@
+# permissions for end users to edit remotesyncs.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: remotesync-editor-role
+rules:
+- apiGroups:
+  - sync.fluxcd.io.fluxcd.io
+  resources:
+  - remotesyncs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - sync.fluxcd.io.fluxcd.io
+  resources:
+  - remotesyncs/status
+  verbs:
+  - get

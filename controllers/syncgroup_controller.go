@@ -66,7 +66,7 @@ func (r *SyncGroupReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	// Now, get a list of syncs that are owned by this syncgroup,
 	// compare it with the syncs I _should_ have, and delete or create
 	// as appropriate.
-	var syncs syncv1alpha1.SyncList
+	var syncs syncv1alpha1.RemoteSyncList
 	if err := r.List(ctx, &syncs, client.InNamespace(req.Namespace), client.MatchingFields{syncOwnerKey: req.Name}); err != nil {
 		log.Error(err, "listing syncs owned by this syncgroup")
 		return ctrl.Result{}, err
@@ -121,56 +121,13 @@ func (r *SyncGroupReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		return ctrl.Result{}, err
 	}
 
-	// When the selector is missing entirely, there's just the one
-	// possible target -- the local cluster -- so there should be
-	// exactly one Sync owned by the SyncGroup.
-	if syncgroup.Spec.Selector == nil {
-		if len(syncs.Items) == 0 {
-			newSync, err := r.createSync(ctx, &syncgroup, req.NamespacedName, spec, nil)
-			if err != nil {
-				log.Error(err, "failed to create local Sync for SyncGroup")
-				return ctrl.Result{}, err
-			}
-			log.Info("created local Sync", "name", newSync.Name)
-		} else {
-			// We'll save the first one that has the right spec and ditch the rest.
-			var syncsToDelete []syncv1alpha1.Sync
-			for i := range syncs.Items {
-				if specEquiv(&spec, &syncs.Items[i].Spec) {
-					syncsToDelete = append(syncsToDelete, syncs.Items[i+1:]...)
-					break
-				}
-				syncsToDelete = append(syncsToDelete, syncs.Items[i])
-			}
-			// none match; pick the first and update it, and delete the rest
-			if len(syncsToDelete) == len(syncs.Items) {
-				syncToKeep := syncsToDelete[0]
-				syncsToDelete = syncsToDelete[1:]
-				syncToKeep.Spec = spec
-				if err := r.Update(ctx, &syncToKeep); err != nil {
-					log.Error(err, "failed to update local Sync")
-					// this is a problem, but it would be good to
-					// attempt to delete the other syncs too, so run
-					// on...
-				}
-			}
+	// If the selector is missing, no clusters are selected. In other
+	// words, there should be no remote syncs. This case is handled by
+	// the following code, because a `nil` value will result in a
+	// labels.Selector that selects nothing, and the partition func
+	// below will therefore count no sync as belonging to a selected
+	// cluster.
 
-			// More than one -- how did that happen? Well anyway, away
-			// with them
-			for _, sync := range syncsToDelete {
-				if err := r.Delete(ctx, &sync, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil {
-					log.Error(err, "failed to delete extra local Sync", "sync", sync.Name)
-					// Best effort, for the minute
-					continue
-				}
-				log.V(debug).Info("deleted extra local Sync", "name", sync.Name)
-			}
-		}
-		return ctrl.Result{}, nil
-	}
-
-	// If the selector is not empty, I need to compare against the
-	// clusters that match the selector.
 	var clusters clusterv1alpha3.ClusterList
 
 	selector, err := syncgroup.Selector()
@@ -203,13 +160,11 @@ func (r *SyncGroupReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	// different.
 
 	for _, sync := range okSyncs {
-		if !specEquiv(&sync.Spec, &spec) {
+		if !specEquiv(&sync.Spec.SyncSpec, &spec) {
 			// I have to be careful not to upset the clusterRef, which
 			// is _not_ part of the newSpec constructed above, since
 			// it's copied into all the syncs created/updated.
-			clusterRef := sync.Spec.Cluster
-			sync.Spec = spec
-			sync.Spec.Cluster = clusterRef
+			sync.Spec.SyncSpec = spec
 			if err := r.Update(ctx, sync); err != nil {
 				log.Error(err, "failed to update spec of existing sync", "name", sync.GetName())
 				// Best effort, as with other things; it'll come round
@@ -225,7 +180,7 @@ func (r *SyncGroupReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	// upgrade policy in the future.
 
 	for name := range clustersToSync {
-		newSync, err := r.createSync(ctx, &syncgroup, req.NamespacedName, spec, &corev1.LocalObjectReference{
+		newSync, err := r.createSync(ctx, &syncgroup, req.NamespacedName, spec, corev1.LocalObjectReference{
 			Name: name,
 		})
 		if err != nil {
@@ -241,11 +196,11 @@ func (r *SyncGroupReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 func (r *SyncGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	ctx := context.Background()
 
-	// This sets up an index on the owner (a SyncGroup) of Sync
+	// This sets up an index on the owner (a SyncGroup) of RemoteSync
 	// objects. This is so we can list them easily when it comes to
 	// reconcile a SyncGroup.
-	if err := mgr.GetFieldIndexer().IndexField(ctx, &syncv1alpha1.Sync{}, syncOwnerKey, func(obj runtime.Object) []string {
-		sync := obj.(*syncv1alpha1.Sync)
+	if err := mgr.GetFieldIndexer().IndexField(ctx, &syncv1alpha1.RemoteSync{}, syncOwnerKey, func(obj runtime.Object) []string {
+		sync := obj.(*syncv1alpha1.RemoteSync)
 		owner := metav1.GetControllerOf(sync)
 		if owner == nil {
 			return nil
@@ -259,7 +214,8 @@ func (r *SyncGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return err
 	}
 
-	// Index the git repository object that a SyncGroup refers to, if any
+	// Index the git repository object that a SyncGroup refers to, if
+	// any.
 	if err := mgr.GetFieldIndexer().IndexField(ctx, &syncv1alpha1.SyncGroup{}, sourceRefKey, func(obj runtime.Object) []string {
 		syncgroup := obj.(*syncv1alpha1.SyncGroup)
 		if ref := syncgroup.Spec.Source.GitRepository; ref != nil {
@@ -273,7 +229,7 @@ func (r *SyncGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&syncv1alpha1.SyncGroup{}).
 		// any time a Sync changes, reconcile its owner SyncGroup
-		Owns(&syncv1alpha1.Sync{}).
+		Owns(&syncv1alpha1.RemoteSync{}).
 		// when a GitRepository changes, reconcile any SyncGroups that
 		// refer to it
 		Watches(&source.Kind{Type: &sourcev1alpha1.GitRepository{}},
@@ -309,20 +265,13 @@ func (r SyncGroupReconciler) syncGroupsForGitRepo(obj handler.MapObject) []recon
 	return reqs
 }
 
-func (r *SyncGroupReconciler) createSync(ctx context.Context, syncgroup *syncv1alpha1.SyncGroup, nsname types.NamespacedName, spec syncv1alpha1.SyncSpec, clusterRef *corev1.LocalObjectReference) (*syncv1alpha1.Sync, error) {
-	var sync syncv1alpha1.Sync
+func (r *SyncGroupReconciler) createSync(ctx context.Context, syncgroup *syncv1alpha1.SyncGroup, nsname types.NamespacedName, spec syncv1alpha1.SyncSpec, clusterRef corev1.LocalObjectReference) (*syncv1alpha1.RemoteSync, error) {
+	var sync syncv1alpha1.RemoteSync
 	sync.Namespace = nsname.Namespace
-	sync.Spec = spec
-	if clusterRef != nil {
-		sync.Name = nsname.Name + "-cluster-" + clusterRef.Name
-		sync.Spec.Cluster = clusterRef
-	} else {
-		sync.Name = nsname.Name + "-local"
-	}
+	sync.Spec.SyncSpec = spec
+	sync.Name = nsname.Name + "-cluster-" + clusterRef.Name
+	sync.Spec.ClusterRef = clusterRef
 
-	// TODO should this really be the controller reference? That is
-	// supposedly for pointing at the controller. Other things seem to
-	// work this way.
 	if err := ctrl.SetControllerReference(syncgroup, &sync, r.Scheme); err != nil {
 		return nil, err
 	}
@@ -330,22 +279,24 @@ func (r *SyncGroupReconciler) createSync(ctx context.Context, syncgroup *syncv1a
 	return &sync, r.Create(ctx, &sync)
 }
 
-func partitionSyncs(syncs []syncv1alpha1.Sync, clusters []clusterv1alpha3.Cluster) (ok, extra []*syncv1alpha1.Sync, missing map[string]struct{}) {
+func partitionSyncs(syncs []syncv1alpha1.RemoteSync, clusters []clusterv1alpha3.Cluster) (ok, extra []*syncv1alpha1.RemoteSync, missing map[string]struct{}) {
 	// Figure out which clusters have a Sync attached to them, which
 	// Syncs are extraneous, and which are just right.
 	clustersToSync := map[string]struct{}{}
-	var extraSyncs []*syncv1alpha1.Sync
-	var okSyncs []*syncv1alpha1.Sync
+	var extraSyncs []*syncv1alpha1.RemoteSync
+	var okSyncs []*syncv1alpha1.RemoteSync
 
 	for _, c := range clusters {
 		clustersToSync[c.Name] = struct{}{}
 	}
 	for _, s := range syncs {
-		if s.Spec.Cluster == nil {
+		// There should not be a remote sync with an empty cluster
+		// ref; treat it as superfluous.
+		if s.Spec.ClusterRef.Name == "" {
 			extraSyncs = append(extraSyncs, &s)
 			continue
 		}
-		clusterName := s.Spec.Cluster.Name
+		clusterName := s.Spec.ClusterRef.Name
 		if _, ok := clustersToSync[clusterName]; ok {
 			okSyncs = append(okSyncs, &s)
 			delete(clustersToSync, clusterName)

@@ -37,8 +37,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	clusterv1alpha3 "sigs.k8s.io/cluster-api/api/v1alpha3"
-	kcfg "sigs.k8s.io/cluster-api/util/kubeconfig"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	kstatus "sigs.k8s.io/kustomize/kstatus/status"
@@ -130,35 +128,6 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		return ctrl.Result{RequeueAfter: when}, nil
 	} // otherwise let it run on to do the sync
 
-	// If the sync refers to a cluster, check that the cluster
-	// exists. If not, I can't do anything here.
-	if sync.Spec.Cluster != nil {
-		var cluster clusterv1alpha3.Cluster
-		clusterName := types.NamespacedName{
-			Name:      sync.Spec.Cluster.Name,
-			Namespace: sync.GetNamespace(),
-		}
-		if err := r.Get(ctx, clusterName, &cluster); err != nil {
-			// If this Sync refers to a missing cluster, it'll get
-			// deleted at some point anyway.
-			return ctrl.Result{}, client.IgnoreNotFound(err)
-		}
-
-		// Only treat it as sync'able if it's provisioned and the
-		// control plane is initialised and the infrastructure is
-		// ready; this is as close an indication as you get for a
-		// cluster that it is ready to be used, as far as I can tell.
-		if !(cluster.Status.GetTypedPhase() == clusterv1alpha3.ClusterPhaseProvisioned &&
-			cluster.Status.ControlPlaneInitialized &&
-			cluster.Status.InfrastructureReady) {
-			// This isn't an error, but we do want to try again at
-			// some point. Watching clusters would be one way to do
-			// this, but just looking again is good enough for now.
-			log.V(debug).Info("cluster not ready", "cluster", clusterName)
-			return ctrl.Result{RequeueAfter: clusterUnreadyRetryDelay}, nil
-		}
-	}
-
 	// Check the dependencies of the sync; if they aren't ready, don't
 	// bother with the rest.
 	if pending, err := r.checkDependenciesReady(ctx, &sync); err != nil {
@@ -222,27 +191,6 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	}
 
 	applyArgs := []string{"apply", "-o", outputJSONPath}
-
-	if sync.Spec.Cluster != nil {
-		clusterName := types.NamespacedName{
-			Name:      sync.Spec.Cluster.Name,
-			Namespace: sync.GetNamespace(),
-		}
-		kubeconfig, err := kcfg.FromSecret(ctx, r.Client, clusterName)
-		if err != nil {
-			// If it can't fnd the kubeconfig, it can't proceed. Maybe
-			// the cluster isn't ready yet. In any case, it's not a
-			// fatal problem; just retry in a bit.
-			log.V(debug).Info("failed to get kubeconfig secret for cluster", "error", err, "cluster", clusterName)
-			return ctrl.Result{RequeueAfter: transitoryErrorRetryDelay}, nil
-		}
-		kubeconfigPath := filepath.Join(tmpdir, "kubeconfig")
-		if err := ioutil.WriteFile(kubeconfigPath, kubeconfig, os.FileMode(0400)); err != nil {
-			// If it can't write to the filesystem, that _is_ a problem
-			return ctrl.Result{}, err
-		}
-		applyArgs = append(applyArgs, "--kubeconfig", kubeconfigPath)
-	}
 
 	if len(sync.Spec.Source.Paths) == 0 {
 		applyArgs = append(applyArgs, "-f", sourcedir)
@@ -374,142 +322,4 @@ func (r *SyncReconciler) updateResourcesStatus(ctx context.Context, sync *syncv1
 	r.Log.V(debug).Info("fetched resources status", "resources", resources, "least", leastStatus)
 	sync.Status.LastResourceStatusTime = &metav1.Time{Time: now}
 	sync.Status.ResourcesLeastStatus = &leastStatus
-}
-
-// dueOrWhen says if period has passed, give or take a second, and if
-// not, when it will have passed.
-func dueOrWhen(period time.Duration, now, last time.Time) (bool, time.Duration) {
-	when := period - now.Sub(last)
-	if when < time.Second { // close enough to not bother requeueing
-		return true, 0
-	}
-	return false, when
-}
-
-// needsApply calculates whether a sync needs to run right now, and if
-// not, how long until it does.
-func needsApply(sync *syncv1alpha1.Sync, now time.Time) (bool, time.Duration) {
-	if sync.Status.LastApplySource == nil ||
-		sync.Status.LastApplyTime == nil ||
-		!(&sync.Spec.Source).Equiv(sync.Status.LastApplySource) {
-		return true, 0
-	}
-	return dueOrWhen(sync.Spec.Interval.Duration, now, sync.Status.LastApplyTime.Time)
-}
-
-// needsStatus calculates whether the resources for a sync should be
-// examined.
-func needsStatus(sync *syncv1alpha1.Sync, now time.Time) (bool, time.Duration) {
-	if sync.Status.LastResourceStatusTime == nil {
-		return true, 0
-	}
-	return dueOrWhen(statusInterval, now, sync.Status.LastResourceStatusTime.Time)
-}
-
-// untargzip unpacks a gzipped-tarball. It uses a logger to report
-// unexpected problems; mostly it will just return the error, on the
-// basis that next time might yield a different result.
-func untargzip(body io.Reader, tmpdir string, log logr.Logger) error {
-	unzip, err := gzip.NewReader(body)
-	if err != nil {
-		return err
-	}
-
-	tr := tar.NewReader(unzip)
-	numberOfFiles := 0
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break // End of archive
-		}
-		if err != nil {
-			return err
-		}
-
-		// TODO symlinks, probably
-
-		info := hdr.FileInfo()
-		path := filepath.Join(tmpdir, hdr.Name)
-
-		if info.IsDir() {
-			// we don't need to create these since they will correspond to tmpdir
-			if hdr.Name == "/" || hdr.Name == "./" {
-				continue
-			}
-			if err = os.MkdirAll(path, info.Mode()&os.ModePerm); err != nil {
-				log.Error(err, "failed to create directory while unpacking tarball", "path", path, "name", hdr.Name)
-				return err
-			}
-			continue
-		}
-
-		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, info.Mode())
-		if err != nil {
-			log.Error(err, "failed to create file while unpacking tarball", "path", path)
-			return err
-		}
-		if _, err = io.Copy(f, tr); err != nil {
-			log.Error(err, "failed to write file contents while unpacking tarball", "path", path)
-			return err
-		}
-		_ = f.Close()
-		numberOfFiles++
-	}
-
-	log.V(debug).Info("unpacked tarball", "tmpdir", tmpdir, "file-count", numberOfFiles)
-	return nil
-}
-
-// unzip unpacks a ZIP archive. It follows the same logging rationale
-// as untargzip.
-func unzip(body io.Reader, tmpdir string, log logr.Logger) error {
-	// The zip reader needs random access (that is
-	// io.ReaderAt). Rather than try to do some tricky on-demand
-	// buffering, I'm going to just read the whole lot into a
-	// bytes.Buffer.
-	buf := new(bytes.Buffer)
-	size, err := io.Copy(buf, body)
-	if err != nil {
-		return err
-	}
-
-	zipReader, err := zip.NewReader(bytes.NewReader(buf.Bytes()), size)
-	if err != nil {
-		return err
-	}
-	numberOfFiles := 0
-	for _, file := range zipReader.File {
-		name := file.FileHeader.Name
-		// FIXME check for valid paths
-		path := filepath.Join(tmpdir, name)
-
-		if strings.HasSuffix(name, "/") {
-			if err := os.MkdirAll(path, os.FileMode(0700)); err != nil {
-				log.Error(err, "failed to create directory from zip", "path", path)
-				return err
-			}
-			continue
-		}
-
-		content, err := file.Open()
-		if err != nil {
-			log.Error(err, "failed to open file in zip", "path", path)
-			return err
-		}
-		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, os.FileMode(0600))
-		if err != nil {
-			log.Error(err, "failed to create file while unpacking zip", "path", path)
-			return err
-		}
-		if _, err = io.Copy(f, content); err != nil {
-			log.Error(err, "failed to write file contents while unpacking zip", "path", path)
-			return err
-		}
-		_ = f.Close()
-		content.Close()
-		numberOfFiles++
-	}
-
-	log.V(debug).Info("unpacked zip", "tmpdir", tmpdir, "file-count", numberOfFiles)
-	return nil
 }
