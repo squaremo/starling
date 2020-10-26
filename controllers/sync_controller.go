@@ -17,13 +17,8 @@ limitations under the License.
 package controllers
 
 import (
-	"archive/tar"
-	"archive/zip"
-	"bytes"
-	"compress/gzip"
 	"context"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"net/http"
 	"os"
@@ -39,8 +34,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	kstatus "sigs.k8s.io/kustomize/kstatus/status"
-	kwait "sigs.k8s.io/kustomize/kstatus/wait"
 
 	syncv1alpha1 "github.com/fluxcd/starling/api/v1alpha1"
 )
@@ -59,22 +52,6 @@ const statusInterval = 20 * time.Second
 
 const debug = 1
 const trace = 2
-
-// This puts an order on status values, which I can use to calculate a
-// _least_ status from a list of resources.
-var statusRanks = map[kstatus.Status]int{
-	kstatus.UnknownStatus:      0,
-	syncv1alpha1.MissingStatus: 1,
-	kstatus.FailedStatus:       2,
-	kstatus.TerminatingStatus:  3,
-	kstatus.InProgressStatus:   4,
-	kstatus.CurrentStatus:      5,
-}
-
-// returns true if a is (strictly) less ready than b.
-func lessReadyThan(a, b kstatus.Status) bool {
-	return statusRanks[a] < statusRanks[b]
-}
 
 // kubectl commands return a List if there's more than one result, but
 // a single item if there's one result. This makes it infuriatingly
@@ -110,11 +87,11 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	//  - at least Interval has passed since the last sync
 	//  - the source has changed
 	now := time.Now().UTC()
-	if ok, when := needsApply(&sync, now); !ok {
+	if ok, when := needsApply(&sync.Spec, &sync.Status, now); !ok {
 		// May still want to update the resource statuses; see if it's
 		// time to do that
-		if ok, whenStatus := needsStatus(&sync, now); ok {
-			r.updateResourcesStatus(ctx, &sync, now)
+		if ok, whenStatus := needsStatus(&sync.Status, now); ok {
+			updateResourcesStatus(ctx, r, r.mapper, &sync.Status, now)
 			if err := r.Status().Update(ctx, &sync); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -130,7 +107,14 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 
 	// Check the dependencies of the sync; if they aren't ready, don't
 	// bother with the rest.
-	if pending, err := r.checkDependenciesReady(ctx, &sync); err != nil {
+	if pending, err := checkDependenciesReady(ctx, func(name string) (syncv1alpha1.SyncStatus, error) {
+		var s syncv1alpha1.Sync
+		err := r.Get(ctx, types.NamespacedName{
+			Namespace: sync.GetNamespace(),
+			Name:      name,
+		}, &s)
+		return s.Status, err
+	}, sync.Spec.Dependencies); err != nil {
 		return ctrl.Result{}, err
 	} else if len(pending) > 0 {
 		log.Info("dependencies not ready", "pending", pending)
@@ -247,6 +231,7 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		sync.Status.Resources = resources
 
 		r.updateResourcesStatus(ctx, &sync, now)
+		r.Log.V(debug).Info("fetched resources status", "resources", sync.Status.Resources, "least", sync.Status.ResourceLeastStatus)
 	}
 
 	if err = r.Status().Update(ctx, &sync); err != nil {
@@ -266,21 +251,19 @@ func (r *SyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 // ---
 
+type resolveDependency func(name string) (syncv1alpha1.SyncStatus, error)
+
 // checkDependenciesReady looks at the dependencies of a Sync and sees
 // if they are ready (have reached the given status). If not, it
 // returns the list of dependencies not met yet.
-func (r *SyncReconciler) checkDependenciesReady(ctx context.Context, sync *syncv1alpha1.Sync) ([]syncv1alpha1.Dependency, error) {
-	deps := sync.Spec.Dependencies
+func checkDependenciesReady(ctx context.Context, getdep resolveDependency, deps []syncv1alpha1.Dependency) ([]syncv1alpha1.Dependency, error) {
 	var pending []syncv1alpha1.Dependency
 	for _, dep := range deps {
-		var s syncv1alpha1.Sync
-		if err := r.Get(ctx, types.NamespacedName{
-			Namespace: sync.GetNamespace(),
-			Name:      dep.Sync.Name,
-		}, &s); err != nil {
+		status, err := getdep(dep.Name)
+		if err != nil {
 			return nil, err
 		}
-		depStatus := s.Status.ResourcesLeastStatus
+		depStatus := status.ResourcesLeastStatus
 		if depStatus == nil || lessReadyThan(*depStatus, dep.RequiredStatus) {
 			// TODO: this is where I'd append the transitive
 			// dependencies, so that cycles could be detected.
@@ -288,38 +271,4 @@ func (r *SyncReconciler) checkDependenciesReady(ctx context.Context, sync *syncv
 		}
 	}
 	return pending, nil
-}
-
-func (r *SyncReconciler) updateResourcesStatus(ctx context.Context, sync *syncv1alpha1.Sync, now time.Time) {
-	resources := sync.Status.Resources
-	ids := make([]kwait.KubernetesObject, len(resources), len(resources))
-	for i, resource := range resources {
-		ids[i] = resource
-	}
-
-	resolver := kwait.NewResolver(r, r.mapper, 0)
-	results := resolver.FetchAndResolveObjects(ctx, ids)
-	// TODO this ignores errors (they just result in 'Unknown'
-	// anyway)
-	leastStatus := kstatus.CurrentStatus
-	for i, result := range results {
-		r.Log.V(1).Info("fetched status", "resource", result.ResourceIdentifier, "result", result.Result, "error", result.Error)
-		s := new(kstatus.Status)
-		*s = result.Result.Status
-		// https://github.com/kubernetes-sigs/kustomize/issues/2587
-		// kstatus does not distinguish between Current (up to date)
-		// and missing, other than in the (for humans) `Message`
-		// field. Hence this brittle test:
-		if result.Result.Message == "Resource does not exist" {
-			*s = syncv1alpha1.MissingStatus
-		}
-
-		if lessReadyThan(*s, leastStatus) {
-			leastStatus = *s
-		}
-		resources[i].Status = s
-	}
-	r.Log.V(debug).Info("fetched resources status", "resources", resources, "least", leastStatus)
-	sync.Status.LastResourceStatusTime = &metav1.Time{Time: now}
-	sync.Status.ResourcesLeastStatus = &leastStatus
 }
