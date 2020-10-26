@@ -32,43 +32,31 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	clusterv1alpha3 "sigs.k8s.io/cluster-api/api/v1alpha3"
+	kcfg "sigs.k8s.io/cluster-api/util/kubeconfig"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	syncv1alpha1 "github.com/fluxcd/starling/api/v1alpha1"
 )
 
-// controller-runtime treats errors very seriously and prints a big
-// stack trace and so on. In some cases, there's a problem that will
-// probably go away, no big deal; for those, I'll just log it and
-// RequeueAfter, rather than returning an error. (This misses out on
-// the backoff behaviour, but so be it).
-
-const clusterUnreadyRetryDelay = 20 * time.Second
-const transitoryErrorRetryDelay = 20 * time.Second
-const dependenciesUnreadyRetryDelay = 20 * time.Second
-
-const statusInterval = 20 * time.Second
-
-const debug = 1
-const trace = 2
-
-// SyncReconciler reconciles a Sync object
-type SyncReconciler struct {
+// RemoteSyncReconciler reconciles a RemoteSync object
+type RemoteSyncReconciler struct {
 	client.Client
 	Log    logr.Logger
 	Scheme *runtime.Scheme
+
 	mapper meta.RESTMapper
 }
 
-// +kubebuilder:rbac:groups=sync.fluxcd.io,resources=syncs,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=sync.fluxcd.io,resources=syncs/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=sync.fluxcd.io,resources=remotesyncs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=sync.fluxcd.io,resources=remotesyncs/status,verbs=get;update;patch
 
-func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
+func (r *RemoteSyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	ctx := context.Background()
 	log := r.Log.WithValues("sync", req.NamespacedName)
 
-	var sync syncv1alpha1.Sync
+	var sync syncv1alpha1.RemoteSync
 	if err := r.Get(ctx, req.NamespacedName, &sync); err != nil {
 		// Nothing I can do here; if it's something other than not
 		// found, let it be requeued.
@@ -79,11 +67,11 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	//  - at least Interval has passed since the last sync
 	//  - the source has changed
 	now := time.Now().UTC()
-	if ok, when := needsApply(&sync.Spec, &sync.Status, now); !ok {
+	if ok, when := needsApply(&sync.Spec.SyncSpec, &sync.Status.SyncStatus, now); !ok {
 		// May still want to update the resource statuses; see if it's
 		// time to do that
-		if ok, whenStatus := needsStatus(&sync.Status, now); ok {
-			updateResourcesStatus(ctx, r, r.mapper, &sync.Status, now)
+		if ok, whenStatus := needsStatus(&sync.Status.SyncStatus, now); ok {
+			updateResourcesStatus(ctx, r, r.mapper, &sync.Status.SyncStatus, now)
 			if err := r.Status().Update(ctx, &sync); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -97,15 +85,66 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		return ctrl.Result{RequeueAfter: when}, nil
 	} // otherwise let it run on to do the sync
 
+	// Find the cluster and get access to it
+
+	var cluster clusterv1alpha3.Cluster
+	clusterName := types.NamespacedName{
+		Name:      sync.Spec.ClusterRef.Name,
+		Namespace: sync.GetNamespace(),
+	}
+	if err := r.Get(ctx, clusterName, &cluster); err != nil {
+		// If this RemoteSync refers to a missing cluster, it'll get
+		// deleted at some point anyway.
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	// Only treat a cluster as sync'able if it's provisioned and the
+	// control plane is initialised and the infrastructure is ready;
+	// this is as close an indication as you get for a cluster that it
+	// is ready to be used, as far as I can tell.
+	if !(cluster.Status.GetTypedPhase() == clusterv1alpha3.ClusterPhaseProvisioned &&
+		cluster.Status.ControlPlaneInitialized &&
+		cluster.Status.InfrastructureReady) {
+		// This isn't an error, but we do want to try again at
+		// some point. Watching clusters would be one way to do
+		// this, but just looking again is good enough for now.
+		log.V(debug).Info("cluster not ready", "cluster", clusterName)
+		return ctrl.Result{RequeueAfter: clusterUnreadyRetryDelay}, nil
+	}
+
+	tmpdir, err := ioutil.TempDir("", "sync-")
+	if err != nil {
+		// failing to create a tmpdir qualifies as a proper error
+		return ctrl.Result{}, err
+	}
+	defer os.RemoveAll(tmpdir)
+
+	applyArgs := []string{"apply", "-o", outputJSONPath}
+
+	kubeconfig, err := kcfg.FromSecret(ctx, r.Client, clusterName)
+	if err != nil {
+		// If it can't fnd the kubeconfig, it can't proceed. Maybe
+		// the cluster isn't ready yet. In any case, it's not a
+		// fatal problem; just retry in a bit.
+		log.V(debug).Info("failed to get kubeconfig secret for cluster", "error", err, "cluster", clusterName)
+		return ctrl.Result{RequeueAfter: transitoryErrorRetryDelay}, nil
+	}
+	kubeconfigPath := filepath.Join(tmpdir, "kubeconfig")
+	if err := ioutil.WriteFile(kubeconfigPath, kubeconfig, os.FileMode(0400)); err != nil {
+		// If it can't write to the filesystem, that _is_ a problem
+		return ctrl.Result{}, err
+	}
+	applyArgs = append(applyArgs, "--kubeconfig", kubeconfigPath)
+
 	// Check the dependencies of the sync; if they aren't ready, don't
 	// bother with the rest.
 	if pending, err := checkDependenciesReady(ctx, func(name string) (syncv1alpha1.SyncStatus, error) {
-		var s syncv1alpha1.Sync
+		var s syncv1alpha1.RemoteSync
 		err := r.Get(ctx, types.NamespacedName{
 			Namespace: sync.GetNamespace(),
 			Name:      name,
 		}, &s)
-		return s.Status, err
+		return s.Status.SyncStatus, err
 	}, sync.Spec.Dependencies); err != nil {
 		return ctrl.Result{}, err
 	} else if len(pending) > 0 {
@@ -139,13 +178,6 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	log.V(debug).Info("got package file", "url", url)
 	defer response.Body.Close()
 
-	tmpdir, err := ioutil.TempDir("", "sync-")
-	if err != nil {
-		// failing to create a tmpdir qualifies as a proper error
-		return ctrl.Result{}, err
-	}
-	defer os.RemoveAll(tmpdir)
-
 	sourcedir := filepath.Join(tmpdir, "source")
 
 	contentType := response.Header.Get("Content-Type")
@@ -165,8 +197,6 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		log.Error(err, "error expanding archive", "url", url)
 		return ctrl.Result{}, nil
 	}
-
-	applyArgs := []string{"apply", "-o", outputJSONPath}
 
 	if len(sync.Spec.Source.Paths) == 0 {
 		applyArgs = append(applyArgs, "-f", sourcedir)
@@ -222,8 +252,7 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		}
 		sync.Status.Resources = resources
 
-		updateResourcesStatus(ctx, r, r.mapper, &sync.Status, now)
-		r.Log.V(debug).Info("fetched resources status", "resources", sync.Status.Resources, "least", sync.Status.ResourcesLeastStatus)
+		updateResourcesStatus(ctx, r, r.mapper, &sync.Status.SyncStatus, now)
 	}
 
 	if err = r.Status().Update(ctx, &sync); err != nil {
@@ -233,10 +262,9 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	return ctrl.Result{RequeueAfter: sync.Spec.Interval.Duration}, nil
 }
 
-func (r *SyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// TODO I have no idea if this is what you are supposed to do
+func (r *RemoteSyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.mapper = mgr.GetRESTMapper()
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&syncv1alpha1.Sync{}).
+		For(&syncv1alpha1.RemoteSync{}).
 		Complete(r)
 }

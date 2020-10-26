@@ -53,7 +53,8 @@ spec:
                       by the dependency before this sync can proceed.
                     type: string
                   sync:
-                    description: Sync is a pointer to another sync.
+                    description: SyncRef is a pointer to another sync of the same
+                      kind.
                     properties:
                       name:
                         description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
@@ -152,7 +153,8 @@ spec:
                       by the dependency before this sync can proceed.
                     type: string
                   sync:
-                    description: Sync is a pointer to another sync.
+                    description: SyncRef is a pointer to another sync of the same
+                      kind.
                     properties:
                       name:
                         description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names

@@ -1,18 +1,34 @@
 package controllers
 
 import (
+	"archive/tar"
+	"archive/zip"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"io"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	kstatus "sigs.k8s.io/kustomize/kstatus/status"
 	kwait "sigs.k8s.io/kustomize/kstatus/wait"
 
 	syncv1alpha1 "github.com/fluxcd/starling/api/v1alpha1"
 )
+
+// kubectl commands return a List if there's more than one result, but
+// a single item if there's one result. This makes it infuriatingly
+// fiddly to get a uniform representation out with JSONPath. The
+// simplest thing seems to be to output both, and ignore `List`
+// entries when parsing.
+const itemJSONPath = `{.apiVersion} {.kind} {.metadata.name} {.metadata.namespace}{"\n"}`
+const outputJSONPath = `jsonpath=` + itemJSONPath + `{range .items[*]}` + itemJSONPath + `{end}`
 
 // This puts an order on status values, which I can use to calculate a
 // _least_ status from a list of resources.
@@ -198,4 +214,26 @@ func updateResourcesStatus(ctx context.Context, client client.Reader, mapper met
 	}
 	status.LastResourceStatusTime = &metav1.Time{Time: now}
 	status.ResourcesLeastStatus = &leastStatus
+}
+
+type resolveDependency func(name string) (syncv1alpha1.SyncStatus, error)
+
+// checkDependenciesReady looks at the dependencies of a Sync and sees
+// if they are ready (have reached the given status). If not, it
+// returns the list of dependencies not met yet.
+func checkDependenciesReady(ctx context.Context, getdep resolveDependency, deps []syncv1alpha1.Dependency) ([]syncv1alpha1.Dependency, error) {
+	var pending []syncv1alpha1.Dependency
+	for _, dep := range deps {
+		status, err := getdep(dep.SyncRef.Name)
+		if err != nil {
+			return nil, err
+		}
+		depStatus := status.ResourcesLeastStatus
+		if depStatus == nil || lessReadyThan(*depStatus, dep.RequiredStatus) {
+			// TODO: this is where I'd append the transitive
+			// dependencies, so that cycles could be detected.
+			pending = append(pending, dep)
+		}
+	}
+	return pending, nil
 }

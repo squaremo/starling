@@ -29,6 +29,7 @@ import (
 
 	sourcev1alpha1 "github.com/fluxcd/source-controller/api/v1alpha1"
 
+	syncfluxcdiov1alpha1 "github.com/fluxcd/starling/api/v1alpha1"
 	syncv1alpha1 "github.com/fluxcd/starling/api/v1alpha1"
 	"github.com/fluxcd/starling/controllers"
 	// +kubebuilder:scaffold:imports
@@ -45,6 +46,7 @@ func init() {
 	_ = clusterv1alpha3.AddToScheme(scheme)
 	_ = syncv1alpha1.AddToScheme(scheme)
 	_ = sourcev1alpha1.AddToScheme(scheme)
+	_ = syncfluxcdiov1alpha1.AddToScheme(scheme)
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -85,6 +87,14 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "SyncGroup")
+		os.Exit(1)
+	}
+	if err = (&controllers.RemoteSyncReconciler{
+		Client: mgr.GetClient(),
+		Log:    ctrl.Log.WithName("controllers").WithName("RemoteSync"),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "RemoteSync")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder
