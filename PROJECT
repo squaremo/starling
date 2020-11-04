@@ -10,4 +10,7 @@ resources:
 - group: sync
   kind: RemoteSync
   version: v1alpha1
+- group: sync
+  kind: ProxySync
+  version: v1alpha1
 version: "2"
