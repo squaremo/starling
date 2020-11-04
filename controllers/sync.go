@@ -6,8 +6,11 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"fmt"
 	"io"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -15,6 +18,7 @@ import (
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	kstatus "sigs.k8s.io/kustomize/kstatus/status"
 	kwait "sigs.k8s.io/kustomize/kstatus/wait"
@@ -212,19 +216,21 @@ func updateResourcesStatus(ctx context.Context, client client.Reader, mapper met
 		}
 		resources[i].Status = s
 	}
-	status.LastResourceStatusTime = &metav1.Time{Time: now}
 	status.ResourcesLeastStatus = &leastStatus
+	status.LastResourceStatusTime = &metav1.Time{Time: now}
 }
 
-type resolveDependency func(name string) (syncv1alpha1.SyncStatus, error)
+type statusResolver interface {
+	getDependencyStatus(ctx context.Context, name string) (syncv1alpha1.SyncStatus, error)
+}
 
 // checkDependenciesReady looks at the dependencies of a Sync and sees
 // if they are ready (have reached the given status). If not, it
 // returns the list of dependencies not met yet.
-func checkDependenciesReady(ctx context.Context, getdep resolveDependency, deps []syncv1alpha1.Dependency) ([]syncv1alpha1.Dependency, error) {
+func checkDependenciesReady(ctx context.Context, s statusResolver, deps []syncv1alpha1.Dependency) ([]syncv1alpha1.Dependency, error) {
 	var pending []syncv1alpha1.Dependency
 	for _, dep := range deps {
-		status, err := getdep(dep.SyncRef.Name)
+		status, err := s.getDependencyStatus(ctx, dep.SyncRef.Name)
 		if err != nil {
 			return nil, err
 		}
@@ -236,4 +242,147 @@ func checkDependenciesReady(ctx context.Context, getdep resolveDependency, deps 
 		}
 	}
 	return pending, nil
+}
+
+// syncHelper is a throwaway type that wraps the things that are
+// particular to Sync or RemoteSync.
+type syncHelper interface {
+	statusResolver
+	spec() syncv1alpha1.SyncSpec
+	modifyStatus(func(*syncv1alpha1.SyncStatus))
+	updateStatus(context.Context) error
+	populateResourcesStatus(context.Context, time.Time)
+}
+
+func apply(ctx context.Context, log logr.Logger, s syncHelper, tmpdir string, extraApplyArgs []string, now time.Time) (ctrl.Result, error) {
+	// Check the dependencies of the sync; if they aren't ready, don't
+	// bother with the rest.
+	if pending, err := checkDependenciesReady(ctx, s, s.spec().Dependencies); err != nil {
+		return ctrl.Result{}, err
+	} else if len(pending) > 0 {
+		log.Info("dependencies not ready", "pending", pending)
+		s.modifyStatus(func(status *syncv1alpha1.SyncStatus) {
+			status.PendingDependencies = pending
+		})
+		if err := s.updateStatus(ctx); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: dependenciesUnreadyRetryDelay}, nil
+	}
+
+	// Attempt to fetch the URL of the package being synced. Many of
+	// the possible failures here will be transitory, so in general,
+	// failures will be logged and and a retry attempted after a
+	// delay. TODO most if not all should result in a status update.
+
+	url := s.spec().Source.URL
+	response, err := http.Get(url)
+	if err != nil {
+		log.V(debug).Info("failed to fetch package URL", "error", err, "url", url)
+		return ctrl.Result{RequeueAfter: transitoryErrorRetryDelay}, nil
+	}
+
+	if response.StatusCode != http.StatusOK {
+		log.V(debug).Info("response was not HTTP 200; will retry",
+			"url", url,
+			"code", response.StatusCode)
+		return ctrl.Result{RequeueAfter: transitoryErrorRetryDelay}, nil
+	}
+
+	log.V(debug).Info("got package file", "url", url)
+	defer response.Body.Close()
+
+	sourcedir := filepath.Join(tmpdir, "source")
+
+	contentType := response.Header.Get("Content-Type")
+	switch contentType {
+	case "application/zip":
+		err = unzip(response.Body, sourcedir, log)
+	case "application/gzip", "application/x-gzip":
+		err = untargzip(response.Body, sourcedir, log)
+	default:
+		err = fmt.Errorf("unsupported content type %q", contentType)
+	}
+
+	if err != nil {
+		// This is likely to be a configuration problem, rather than
+		// transitory; for that reason, log it but don't retry until
+		// something changes.
+		log.Error(err, "error expanding archive", "url", url)
+		return ctrl.Result{}, nil
+	}
+
+	// prepare to apply
+
+	applyArgs := []string{"apply", "-o", outputJSONPath}
+
+	if len(s.spec().Source.Paths) == 0 {
+		applyArgs = append(applyArgs, "-f", sourcedir)
+	}
+	for _, path := range s.spec().Source.Paths {
+		// FIXME guard against parent paths
+		applyArgs = append(applyArgs, "-f", filepath.Join(sourcedir, path))
+	}
+
+	applyArgs = append(applyArgs, extraApplyArgs...)
+
+	log.V(debug).Info("kubectl command", "args", applyArgs)
+	cmd := exec.CommandContext(ctx, "kubectl", applyArgs...)
+	outBytes, err := cmd.CombinedOutput()
+	out := string(outBytes)
+
+	result := syncv1alpha1.ApplySuccess
+	if err != nil {
+		result = syncv1alpha1.ApplyFail
+	}
+
+	// kubectl can exit with non-zero because it couldn't connect, or
+	// because it didn't apply things cleanly, and those are different
+	// kinds of problem here. For now, just log the result. Later,
+	// it'll go in the status.
+	log.Info("kubectl apply result", "exit-code", cmd.ProcessState.ExitCode(), "output", out)
+
+	s.modifyStatus(func(status *syncv1alpha1.SyncStatus) {
+		status.LastApplyTime = &metav1.Time{Time: now}
+		status.LastApplyResult = result
+		source := s.spec().Source
+		status.LastApplySource = &source
+		// FIXME update this (which is not passed in, at present)
+		//status.ObservedGeneration = spec.Generation
+	})
+
+	if result == syncv1alpha1.ApplySuccess {
+		// parse output to get resources.
+		var resources []syncv1alpha1.ResourceStatus
+		outLines := strings.Split(out, "\n")
+		for _, line := range outLines {
+			if line == "" {
+				continue
+			}
+			parts := strings.Split(line, " ")
+			// Ignore List, since that's just a wrapper. See the
+			// comment about the JSONPath format, at the top.
+			if parts[1] == "List" {
+				continue
+			}
+			resources = append(resources, syncv1alpha1.ResourceStatus{
+				TypeMeta: &metav1.TypeMeta{
+					APIVersion: parts[0],
+					Kind:       parts[1],
+				},
+				Name:      parts[2],
+				Namespace: parts[3],
+			})
+		}
+		s.modifyStatus(func(status *syncv1alpha1.SyncStatus) {
+			status.Resources = resources
+		})
+		s.populateResourcesStatus(ctx, now)
+	}
+
+	if err = s.updateStatus(ctx); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	return ctrl.Result{RequeueAfter: s.spec().Interval.Duration}, nil
 }
