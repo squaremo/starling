@@ -11,11 +11,21 @@ else
 GOBIN=$(shell go env GOBIN)
 endif
 
+TEST_CRDS:=controllers/testdata/crds
+
 all: manager
 
+.PHONY: test_deps
+# Running the tests requires the Cluster API CRDs
+test_deps: ${TEST_CRDS}/cluster.yaml
+
 # Run tests
-test: generate fmt vet manifests
+test: test_deps generate fmt vet manifests
 	go test ./... -coverprofile cover.out
+
+${TEST_CRDS}/cluster.yaml:
+	mkdir -p ${TEST_CRDS}
+	curl -s  -o "$@" https://raw.githubusercontent.com/kubernetes-sigs/cluster-api/master/config/crd/bases/cluster.x-k8s.io_clusters.yaml
 
 # Build manager binary
 manager: generate fmt vet
