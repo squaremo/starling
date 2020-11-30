@@ -20,10 +20,12 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"time"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -32,8 +34,14 @@ import (
 	"sigs.k8s.io/cluster-api/util/kubeconfig"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
-	//	syncv1alpha1 "github.com/fluxcd/starling/api/v1alpha1"
+
+	syncv1alpha1 "github.com/fluxcd/starling/api/v1alpha1"
 	// +kubebuilder:scaffold:imports
+)
+
+const (
+	timeout  = 20 * time.Second
+	interval = time.Second
 )
 
 // The suite setup constructs a "cluster" which runs the syncing
@@ -100,7 +108,36 @@ var _ = Describe("proxy syncing", func() {
 		Expect(err).ToNot(HaveOccurred())
 	})
 
-	It("bootstrapped at all", func() {
+	It("makes a sync in the downstream", func() {
+		// make a proxy object in the mgmt cluster
+		proxySync := syncv1alpha1.ProxySync{
+			Spec: syncv1alpha1.ProxySyncSpec{
+				Template: syncv1alpha1.SyncTemplate{
+					Spec: syncv1alpha1.SyncSpec{
+						// It won't actually sync this; no sync controller in the downstream
+						Source: syncv1alpha1.SyncSource{
+							URL: "https://github.com/cuttlefacts/cuttlefacts-app.git",
+						},
+					},
+				},
+				ClusterRef: corev1.LocalObjectReference{Name: "downstream"},
+			},
+		}
+		proxySync.Name = "test-proxy-sync"
+		proxySync.Namespace = "default"
+		Expect(k8sClient.Create(context.Background(), &proxySync)).To(Succeed())
+
+		Eventually(func() bool {
+			var sync syncv1alpha1.Sync
+			err := downstreamK8sClient.Get(context.Background(), types.NamespacedName{
+				Name:      "test-proxy-sync",
+				Namespace: "default",
+			}, &sync)
+			if err != nil {
+				return false
+			}
+			return sync.Spec.Source.URL == "https://github.com/cuttlefacts/cuttlefacts-app.git"
+		}, timeout, interval).Should(BeTrue())
 	})
 })
 
