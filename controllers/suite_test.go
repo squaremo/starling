@@ -84,6 +84,17 @@ var _ = BeforeSuite(func(done Done) {
 		Scheme: scheme.Scheme,
 	})
 	Expect(err).ToNot(HaveOccurred())
+
+	// NB the testenv endpoint is given to the reconciler, so it knows
+	// where the "local" API is.
+
+	Expect((&SyncReconciler{
+		Client:             k8sMgr.GetClient(),
+		Log:                ctrl.Log.WithName("controllers").WithName("Sync"),
+		Scheme:             scheme.Scheme,
+		KubernetesEndpoint: testEnv.ControlPlane.APIURL().String(),
+	}).SetupWithManager(k8sMgr)).To(Succeed())
+
 	proxyReconciler = &ProxySyncReconciler{
 		Client: k8sMgr.GetClient(),
 		Log:    ctrl.Log.WithName("controllers").WithName("ProxySync"),

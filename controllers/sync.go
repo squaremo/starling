@@ -293,6 +293,9 @@ func apply(ctx context.Context, log logr.Logger, s syncHelper, tmpdir string, ex
 	defer response.Body.Close()
 
 	sourcedir := filepath.Join(tmpdir, "source")
+	if err := os.MkdirAll(sourcedir, os.FileMode(0700)); err != nil {
+		return ctrl.Result{Requeue: true}, err
+	}
 
 	contentType := response.Header.Get("Content-Type")
 	switch contentType {

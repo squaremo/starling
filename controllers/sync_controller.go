@@ -52,6 +52,9 @@ type SyncReconciler struct {
 	client.Client
 	Log    logr.Logger
 	Scheme *runtime.Scheme
+
+	KubernetesEndpoint string // URL of Kubernetes API; if empty, assume in cluster
+
 	mapper meta.RESTMapper
 }
 
@@ -100,7 +103,11 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	}
 	defer os.RemoveAll(tmpdir)
 
-	return apply(ctx, log, s, tmpdir, nil, now)
+	var applyArgs []string
+	if r.KubernetesEndpoint != "" {
+		applyArgs = append(applyArgs, "--server", r.KubernetesEndpoint)
+	}
+	return apply(ctx, log, s, tmpdir, applyArgs, now)
 }
 
 func (r *SyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
