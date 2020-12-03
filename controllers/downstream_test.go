@@ -68,6 +68,11 @@ func makeDownstreamEnv() (*envtest.Environment, *clusterv1.Cluster, *corev1.Secr
 	cluster.Namespace = "default"
 	Expect(k8sClient.Create(context.Background(), cluster)).To(Succeed())
 
+	cluster.Status.ControlPlaneInitialized = true                   // ) i.e., ready
+	cluster.Status.InfrastructureReady = true                       // )
+	cluster.Status.SetTypedPhase(clusterv1.ClusterPhaseProvisioned) // )
+	Expect(k8sClient.Status().Update(context.Background(), cluster)).To(Succeed())
+
 	// For creating a secret:
 	// https://github.com/kubernetes-sigs/cluster-api/blob/e5b02bdbce6c32b4dc062e9e1f14f8ccd16e8952/util/kubeconfig/kubeconfig.go#L109
 	config := kubeconfigFromEndpoint("downstream", downstreamEnv.ControlPlane.APIURL().String())

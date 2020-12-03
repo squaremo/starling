@@ -18,7 +18,7 @@ package controllers
 
 import (
 	"context"
-	"time"
+	"net/http/httptest"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -32,15 +32,7 @@ import (
 	// +kubebuilder:scaffold:imports
 )
 
-const (
-	timeout  = 20 * time.Second
-	interval = time.Second
-)
-
-// The setup constructs a "cluster" which runs the syncing
-// machinery. To test cross-cluster syncing, we need at least one
-// other "cluster".
-var _ = Describe("proxy syncing", func() {
+var _ = Describe("remote syncing", func() {
 
 	var (
 		downstreamK8sClient client.Client
@@ -49,11 +41,23 @@ var _ = Describe("proxy syncing", func() {
 		clusterSecret       *corev1.Secret
 	)
 
+	tarball := makeTarball("testdata/sync-repo")
+	const repoPath = "/syncthis.tgz"
+
+	var (
+		repoSrv *httptest.Server
+		repoURL string
+	)
+
 	BeforeEach(func() {
 		downstreamEnv, cluster, clusterSecret, downstreamK8sClient = makeDownstreamEnv()
+		repoSrv, repoURL = makeRepoSrv(repoPath, tarball)
 	})
 
 	AfterEach(func() {
+		By("stopping repo server")
+		repoSrv.Close()
+
 		By("removing cluster records")
 		Expect(k8sClient.Delete(context.Background(), cluster)).To(Succeed())
 		Expect(k8sClient.Delete(context.Background(), clusterSecret)).To(Succeed())
@@ -63,35 +67,32 @@ var _ = Describe("proxy syncing", func() {
 		Expect(err).ToNot(HaveOccurred())
 	})
 
-	It("makes a sync in the downstream", func() {
+	It("syncs the repo contents to the downstream", func() {
 		// make a proxy object in the mgmt cluster
-		proxySync := syncv1alpha1.ProxySync{
-			Spec: syncv1alpha1.ProxySyncSpec{
-				Template: syncv1alpha1.SyncTemplate{
-					Spec: syncv1alpha1.SyncSpec{
-						// It won't actually sync this; no sync controller in the downstream
-						Source: syncv1alpha1.SyncSource{
-							URL: "https://github.com/cuttlefacts/cuttlefacts-app.git",
-						},
+		remoteSync := syncv1alpha1.RemoteSync{
+			Spec: syncv1alpha1.RemoteSyncSpec{
+				SyncSpec: syncv1alpha1.SyncSpec{
+					Source: syncv1alpha1.SyncSource{
+						URL: repoURL,
 					},
 				},
 				ClusterRef: corev1.LocalObjectReference{Name: cluster.Name},
 			},
 		}
-		proxySync.Name = "test-proxy-sync"
-		proxySync.Namespace = "default"
-		Expect(k8sClient.Create(context.Background(), &proxySync)).To(Succeed())
+		remoteSync.Name = "test-remote-sync"
+		remoteSync.Namespace = "default"
+		Expect(k8sClient.Create(context.Background(), &remoteSync)).To(Succeed())
 
 		Eventually(func() bool {
-			var sync syncv1alpha1.Sync
+			var cfm corev1.ConfigMap
 			err := downstreamK8sClient.Get(context.Background(), types.NamespacedName{
-				Name:      "test-proxy-sync",
+				Name:      "config", // known to be in the fixture
 				Namespace: "default",
-			}, &sync)
+			}, &cfm)
 			if err != nil {
 				return false
 			}
-			return sync.Spec.Source.URL == "https://github.com/cuttlefacts/cuttlefacts-app.git"
+			return true
 		}, timeout, interval).Should(BeTrue())
 	})
 })

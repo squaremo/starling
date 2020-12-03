@@ -95,6 +95,12 @@ var _ = BeforeSuite(func(done Done) {
 		KubernetesEndpoint: testEnv.ControlPlane.APIURL().String(),
 	}).SetupWithManager(k8sMgr)).To(Succeed())
 
+	Expect((&RemoteSyncReconciler{
+		Client: k8sMgr.GetClient(),
+		Log:    ctrl.Log.WithName("controllers").WithName("RemoteSync"),
+		Scheme: scheme.Scheme,
+	}).SetupWithManager(k8sMgr)).To(Succeed())
+
 	proxyReconciler = &ProxySyncReconciler{
 		Client: k8sMgr.GetClient(),
 		Log:    ctrl.Log.WithName("controllers").WithName("ProxySync"),

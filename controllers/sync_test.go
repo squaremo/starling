@@ -39,9 +39,7 @@ import (
 
 var _ = Describe("syncing", func() {
 
-	// TODO construct a tarball of the fixture, to be served
 	tarball := makeTarball("testdata/sync-repo")
-
 	const repoPath = "/repo.tar.gz"
 
 	var (
@@ -50,17 +48,7 @@ var _ = Describe("syncing", func() {
 	)
 
 	BeforeEach(func() {
-		// TODO set up a test server for a repo
-		repoSrv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method == "GET" && r.URL.Path == repoPath {
-				w.Header().Set("Content-Type", "application/gzip")
-				w.Write(tarball)
-				return
-			}
-			w.WriteHeader(404)
-			return
-		}))
-		repoURL = repoSrv.URL + repoPath
+		repoSrv, repoURL = makeRepoSrv(repoPath, tarball)
 	})
 
 	AfterEach(func() {
@@ -151,4 +139,21 @@ func makeTarball(path string) []byte {
 	tw.Close()
 	gzipped.Close()
 	return buf.Bytes()
+}
+
+// makeRepoSrv constructs an HTTP server which will serve the tarball
+// (given as bytes) at the known path. It returns the server, and the
+// URL at which the tarball can be accessed.
+func makeRepoSrv(path string, tarball []byte) (*httptest.Server, string) {
+	repoSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Path == path {
+			w.Header().Set("Content-Type", "application/gzip")
+			w.Write(tarball)
+			return
+		}
+		w.WriteHeader(404)
+		return
+	}))
+	repoURL := repoSrv.URL + path
+	return repoSrv, repoURL
 }
