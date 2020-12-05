@@ -4,7 +4,7 @@ apiVersion: apiextensions.k8s.io/v1beta1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.2.5
+    controller-gen.kubebuilder.io/version: v0.3.0
   creationTimestamp: null
   name: syncgroups.sync.fluxcd.io
 spec:
@@ -55,8 +55,8 @@ spec:
               type: string
             selector:
               description: Selector gives the set of clusters to which to sync the
-                given source, as a label selector. If missing, a Sync will be created
-                for the local cluster. If _empty_, all clusters are selected.
+                given source, as a label selector. If missing, no clusters are selected.
+                If empty, all clusters are selected.
               properties:
                 matchExpressions:
                   description: matchExpressions is a list of label selector requirements.
@@ -131,7 +131,7 @@ spec:
             observedSource:
               description: ObservedSource gives the configuraton source, as last seen
                 by the controller. NB this is a SyncSource, since it encodes the actual
-                revision etc. that will be rolled out to Sync objects.
+                revision etc. that will be rolled out to RemoteSync objects.
               properties:
                 paths:
                   description: Paths gives the paths to include in the sync. If using

@@ -1,10 +1,16 @@
 domain: fluxcd.io
 repo: github.com/fluxcd/starling
 resources:
-- group: sync.fluxcd.io
+- group: sync
   kind: Sync
   version: v1alpha1
-- group: sync.fluxcd.io
+- group: sync
   kind: SyncGroup
+  version: v1alpha1
+- group: sync
+  kind: RemoteSync
+  version: v1alpha1
+- group: sync
+  kind: ProxySync
   version: v1alpha1
 version: "2"

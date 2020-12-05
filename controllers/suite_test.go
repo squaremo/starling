@@ -24,13 +24,15 @@ import (
 	. "github.com/onsi/gomega"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	clusterv1 "sigs.k8s.io/cluster-api/api/v1alpha3"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/controller-runtime/pkg/envtest/printer"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	syncfluxcdiov1alpha1 "github.com/fluxcd/starling/api/v1alpha1"
+	syncv1alpha1 "github.com/fluxcd/starling/api/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -40,6 +42,8 @@ import (
 var cfg *rest.Config
 var k8sClient client.Client
 var testEnv *envtest.Environment
+var k8sMgr ctrl.Manager
+var proxyReconciler *ProxySyncReconciler
 
 func TestAPIs(t *testing.T) {
 	RegisterFailHandler(Fail)
@@ -54,7 +58,10 @@ var _ = BeforeSuite(func(done Done) {
 
 	By("bootstrapping test environment")
 	testEnv = &envtest.Environment{
-		CRDDirectoryPaths: []string{filepath.Join("..", "config", "crd", "bases")},
+		CRDDirectoryPaths: []string{
+			filepath.Join("..", "config", "crd", "bases"),
+			filepath.Join("testdata", "crds"),
+		},
 	}
 
 	var err error
@@ -62,17 +69,51 @@ var _ = BeforeSuite(func(done Done) {
 	Expect(err).ToNot(HaveOccurred())
 	Expect(cfg).ToNot(BeNil())
 
-	err = syncfluxcdiov1alpha1.AddToScheme(scheme.Scheme)
-	Expect(err).NotTo(HaveOccurred())
-
-	err = syncfluxcdiov1alpha1.AddToScheme(scheme.Scheme)
+	err = syncv1alpha1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 
 	// +kubebuilder:scaffold:scheme
 
+	Expect(clusterv1.AddToScheme(scheme.Scheme)).To(Succeed())
+
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
 	Expect(err).ToNot(HaveOccurred())
 	Expect(k8sClient).ToNot(BeNil())
+
+	k8sMgr, err = ctrl.NewManager(cfg, ctrl.Options{
+		Scheme: scheme.Scheme,
+	})
+	Expect(err).ToNot(HaveOccurred())
+
+	// NB the testenv endpoint is given to the reconciler, so it knows
+	// where the "local" API is.
+
+	Expect((&SyncReconciler{
+		Client:             k8sMgr.GetClient(),
+		Log:                ctrl.Log.WithName("controllers").WithName("Sync"),
+		Scheme:             scheme.Scheme,
+		KubernetesEndpoint: testEnv.ControlPlane.APIURL().String(),
+	}).SetupWithManager(k8sMgr)).To(Succeed())
+
+	Expect((&RemoteSyncReconciler{
+		Client: k8sMgr.GetClient(),
+		Log:    ctrl.Log.WithName("controllers").WithName("RemoteSync"),
+		Scheme: scheme.Scheme,
+	}).SetupWithManager(k8sMgr)).To(Succeed())
+
+	proxyReconciler = &ProxySyncReconciler{
+		Client: k8sMgr.GetClient(),
+		Log:    ctrl.Log.WithName("controllers").WithName("ProxySync"),
+		Scheme: scheme.Scheme,
+	}
+	Expect(proxyReconciler.SetupWithManager(k8sMgr)).To(Succeed())
+
+	// this must be started for the caches to be running, and thereby
+	// for the client to be usable.
+	go func() {
+		err = k8sMgr.Start(ctrl.SetupSignalHandler())
+		Expect(err).ToNot(HaveOccurred())
+	}()
 
 	close(done)
 }, 60)

@@ -29,8 +29,8 @@ import (
 // sync specification provided
 type SyncGroupSpec struct {
 	// Selector gives the set of clusters to which to sync the given
-	// source, as a label selector. If missing, a Sync will be created
-	// for the local cluster. If _empty_, all clusters are selected.
+	// source, as a label selector. If missing, no clusters are
+	// selected. If empty, all clusters are selected.
 	// +optional
 	Selector *metav1.LabelSelector `json:"selector,omitempty"`
 	// Source gives the source of the package to sync.
@@ -71,7 +71,7 @@ type SyncSummary struct {
 }
 
 // Register a sync depending on its spec and status
-func (sum *SyncSummary) Count(sync *Sync) {
+func (sum *SyncSummary) Count(sync *RemoteSync) {
 	if sync.Status.LastApplySource == nil ||
 		!sync.Status.LastApplySource.Equiv(&sync.Spec.Source) {
 		sum.Updated++
@@ -103,7 +103,8 @@ type SyncGroupStatus struct {
 	Summary *SyncSummary `json:"summary,omitempty"`
 	// ObservedSource gives the configuraton source, as last seen by
 	// the controller. NB this is a SyncSource, since it encodes the
-	// actual revision etc. that will be rolled out to Sync objects.
+	// actual revision etc. that will be rolled out to RemoteSync
+	// objects.
 	// +optional
 	ObservedSource *SyncSource `json:"observedSource,omitempty"`
 }

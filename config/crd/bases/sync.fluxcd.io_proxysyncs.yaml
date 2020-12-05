@@ -6,7 +6,7 @@ metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.3.0
   creationTimestamp: null
-  name: syncs.sync.fluxcd.io
+  name: proxysyncs.sync.fluxcd.io
 spec:
   additionalPrinterColumns:
   - JSONPath: .status.lastApplySource.revision
@@ -23,16 +23,16 @@ spec:
     type: string
   group: sync.fluxcd.io
   names:
-    kind: Sync
-    listKind: SyncList
-    plural: syncs
-    singular: sync
+    kind: ProxySync
+    listKind: ProxySyncList
+    plural: proxysyncs
+    singular: proxysync
   scope: Namespaced
   subresources:
     status: {}
   validation:
     openAPIV3Schema:
-      description: Sync is the Schema for the syncs API
+      description: ProxySync is the Schema for the proxysyncs API
       properties:
         apiVersion:
           description: 'APIVersion defines the versioned schema of this representation
@@ -47,65 +47,92 @@ spec:
         metadata:
           type: object
         spec:
-          description: SyncSpec defines the desired state of Sync
+          description: ProxySyncSpec defines the desired state of ProxySync
           properties:
-            dependencies:
-              description: Dependencies gives a list of the dependency relations this
-                sync has. These must be satisfied for this sync to be applied.
-              items:
-                properties:
-                  requiredStatus:
-                    description: RequiredStatus is the status needed to be reported
-                      by the dependency before this sync can proceed.
-                    type: string
-                  sync:
-                    description: SyncRef is a pointer to another sync of the same
-                      kind.
-                    properties:
-                      name:
-                        description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                          TODO: Add other useful fields. apiVersion, kind, uid?'
-                        type: string
-                    type: object
-                required:
-                - requiredStatus
-                - sync
-                type: object
-              type: array
-            interval:
-              description: Interval is the target period for reapplying the config
-                to the cluster. Syncs may be processed slower than this, depending
-                on load; or may occur more often if the sync in question is updated.
-              type: string
-            source:
-              description: Source is the location from which to get configuration
-                to sync.
+            clusterRef:
+              description: ClusterRef is a reference to the cluster in which to run
+                the sync defined by the template.
               properties:
-                paths:
-                  description: Paths gives the paths to include in the sync. If using
-                    a kustomization, there should be only one, ending in 'kustomization.yaml'.
-                    If missing, the root directory will be used.
-                  items:
-                    type: string
-                  type: array
-                revision:
-                  description: Revision identifies the commit from which the URL is
-                    generated. This accompanies the URL so that it can be explicitly
-                    recorded in the status.
+                name:
+                  description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    TODO: Add other useful fields. apiVersion, kind, uid?'
                   type: string
-                url:
-                  description: URL is a url for downloading a zipfile or tarball of
-                    the package to sync
-                  type: string
+              type: object
+            template:
+              description: Template gives the sync to run in the remote cluster
+              properties:
+                spec:
+                  description: Spec gives the specification of the sync to run in
+                    the remote cluster
+                  properties:
+                    dependencies:
+                      description: Dependencies gives a list of the dependency relations
+                        this sync has. These must be satisfied for this sync to be
+                        applied.
+                      items:
+                        properties:
+                          requiredStatus:
+                            description: RequiredStatus is the status needed to be
+                              reported by the dependency before this sync can proceed.
+                            type: string
+                          sync:
+                            description: SyncRef is a pointer to another sync of the
+                              same kind.
+                            properties:
+                              name:
+                                description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                  TODO: Add other useful fields. apiVersion, kind,
+                                  uid?'
+                                type: string
+                            type: object
+                        required:
+                        - requiredStatus
+                        - sync
+                        type: object
+                      type: array
+                    interval:
+                      description: Interval is the target period for reapplying the
+                        config to the cluster. Syncs may be processed slower than
+                        this, depending on load; or may occur more often if the sync
+                        in question is updated.
+                      type: string
+                    source:
+                      description: Source is the location from which to get configuration
+                        to sync.
+                      properties:
+                        paths:
+                          description: Paths gives the paths to include in the sync.
+                            If using a kustomization, there should be only one, ending
+                            in 'kustomization.yaml'. If missing, the root directory
+                            will be used.
+                          items:
+                            type: string
+                          type: array
+                        revision:
+                          description: Revision identifies the commit from which the
+                            URL is generated. This accompanies the URL so that it
+                            can be explicitly recorded in the status.
+                          type: string
+                        url:
+                          description: URL is a url for downloading a zipfile or tarball
+                            of the package to sync
+                          type: string
+                      required:
+                      - url
+                      type: object
+                  required:
+                  - interval
+                  - source
+                  type: object
               required:
-              - url
+              - spec
               type: object
           required:
-          - interval
-          - source
+          - clusterRef
+          - template
           type: object
         status:
-          description: SyncStatus defines the observed state of Sync
+          description: ProxySyncStatus defines the observed state of ProxySync
           properties:
             lastApplyResult:
               description: LastApplyResult records the outcome of the last sync attempt
