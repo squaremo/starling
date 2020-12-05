@@ -31,6 +31,7 @@ import (
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	syncv1alpha1 "github.com/fluxcd/starling/api/v1alpha1"
@@ -97,6 +98,20 @@ var _ = Describe("syncing", func() {
 				return s.Status.LastApplyTime != nil
 			}, timeout, interval).Should(BeTrue())
 			Expect(s.Status.LastApplyResult).To(Equal(syncv1alpha1.ApplySuccess))
+		})
+
+		It("syncs the repo contents to the cluster", func() {
+			Eventually(func() bool {
+				var cfm corev1.ConfigMap
+				err := k8sClient.Get(context.Background(), types.NamespacedName{
+					Name:      "config", // known to be in the fixture
+					Namespace: "default",
+				}, &cfm)
+				if err != nil {
+					return false
+				}
+				return true
+			}, timeout, interval).Should(BeTrue())
 		})
 
 		AfterEach(func() {

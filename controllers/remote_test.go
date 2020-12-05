@@ -68,7 +68,7 @@ var _ = Describe("remote syncing", func() {
 	})
 
 	It("syncs the repo contents to the downstream", func() {
-		// make a proxy object in the mgmt cluster
+		// make a remote object in the mgmt cluster
 		remoteSync := syncv1alpha1.RemoteSync{
 			Spec: syncv1alpha1.RemoteSyncSpec{
 				SyncSpec: syncv1alpha1.SyncSpec{
