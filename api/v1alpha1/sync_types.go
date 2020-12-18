@@ -22,10 +22,6 @@ import (
 	kstatus "sigs.k8s.io/kustomize/kstatus/status"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!  NOTE: json
-// tags are required.  Any new fields you add must have json tags for
-// the fields to be serialized.
-
 const (
 	// MissingStatus records the fact of an expected resource not
 	// being present in the cluster. This is not at present in the
