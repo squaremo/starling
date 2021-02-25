@@ -143,6 +143,35 @@ Possible solutions:
 
 **Include syncs objects in distributable packages**
 
+For example, you could include Kustomization (and possibly
+HelmRelease) objects, from the [GitOps
+Toolkit](https://fluxcd.io). These have a dependency mechanism that
+operates between individual Kustomization object (and between
+individual HelmRelease objects; but not between the two kinds).
+
+There's one obvious hurdle to doing this: the sync objects must
+include references to the git repository from whence they came. So
+this would either have to rely on a convention (there's always a git
+repository object named .. something that won't collide), or they
+would have to be patched after the fact.
+
+The latter is not so bad; a package manager of some kind could handle
+it. If you wanted to refer to a package in place, rather than fetching
+it to your own git repository, it would need to come with its own
+GitRepository object. If you fetch it, you patch the GitRepository
+object and any paths in Kustomizations.
+
+One advantage of this approach is that you can have a package that
+syncs a git repository (or Helm charts) elsewhere -- they don't have
+to be in the package. In fact a package might refer _only_ to
+definitions of syncs.
+
+However, the big downside is that this is all tied to a particular
+implementation (to wit: the GitOps Toolkit controllers), rather than
+an algorithm.
+
+**Describe dependencies in a higher-level object**
+
 **Treat directories as indicating dependence**
 
 **Have dependence relations only in syncs**
